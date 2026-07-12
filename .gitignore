@@ -1,0 +1,37 @@
+# Private inputs and generated sidecars
+videos/**
+!videos/.gitkeep
+
+# Local runtime: models, environments, caches, state, logs, reports, samples
+.subtitle-tools/
+.venv/
+venv/
+config.toml
+.env
+.env.*
+!.env.example
+
+# Python and tests
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
+
+# Temporary/generated subtitle artifacts outside the canonical runtime
+*.partial
+*.tmp
+*.log
