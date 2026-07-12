@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from subtitle_pipeline import cli
 from subtitle_pipeline.cli import ActiveRunnerError, run_lock, settings_fingerprint, status
 from subtitle_pipeline.config import load_settings
 
@@ -53,6 +54,16 @@ def test_run_lock_rejects_duplicate(tmp_path: Path):
         with pytest.raises(ActiveRunnerError):
             with run_lock(settings):
                 pass
+
+
+def test_process_alive_uses_non_signaling_windows_check(monkeypatch):
+    checked: list[int] = []
+    monkeypatch.setattr(cli.os, "name", "nt")
+    monkeypatch.setattr(cli, "windows_process_alive", lambda pid: checked.append(pid) or True)
+    monkeypatch.setattr(cli.os, "kill", lambda *_: pytest.fail("os.kill must not be used on Windows"))
+
+    assert cli.process_alive(1234)
+    assert checked == [1234]
 
 
 def test_empty_project_requests_videos(tmp_path: Path, monkeypatch):
