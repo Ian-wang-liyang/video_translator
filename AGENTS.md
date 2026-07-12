@@ -31,6 +31,8 @@ python -m subtitle_pipeline --json status
 python -m subtitle_pipeline sample --minutes 5
 python -m subtitle_pipeline approve-sample --note "human review summary"
 python -m subtitle_pipeline process
+python -m subtitle_pipeline approve-video-gate --note "human review summary"
+python -m subtitle_pipeline process
 python -m subtitle_pipeline validate
 python -m subtitle_pipeline bilingual
 ```
@@ -52,8 +54,9 @@ Bootstrap a fresh clone with `python scripts/bootstrap.py --backend auto
   current video, output/clip, backend, model, and transcription revision. Reuse
   Chinese outputs only when their fingerprint matches the exact Japanese
   source, backend, model, and translation/prompt revisions.
-- Write outputs atomically via `.partial`; preserve rejected outputs in
-  `.subtitle-tools/quarantine/<timestamp>-<reason>/`.
+- Write outputs atomically via `.partial`. Preserve all existing artifacts under
+  `.subtitle-tools/quarantine/`; quarantine suspect outputs before manual
+  replacement.
 - A bilingual cue places Simplified Chinese above Japanese and is generated only
   from exactly aligned monolingual SRTs.
 

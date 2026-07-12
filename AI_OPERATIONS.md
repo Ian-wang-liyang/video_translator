@@ -5,9 +5,16 @@ before changing files or starting inference.
 
 ## Start every session
 
-Run `doctor --json`, `inventory --json`, and `status --json` through the active
-virtual-environment Python. Follow `next_action`; do not infer activity from a
-PID file alone.
+Run these commands through the active virtual-environment Python:
+
+```text
+python -m subtitle_pipeline --json doctor
+python -m subtitle_pipeline --json inventory
+python -m subtitle_pipeline --json status
+```
+
+`--json` is a global option and must precede the subcommand. Follow
+`next_action`; do not infer activity from a PID file alone.
 
 Exit codes: `0` success, `10` validation failure, `20` configuration error, `21`
 missing dependency/model, `30` active-runner conflict, `40` inference failure,
@@ -24,7 +31,8 @@ and `130` interruption.
 - `review_first_video`: surface the first video outputs for human review, then use
   `approve-video-gate --note "..."` only with explicit human approval.
 - `resume`: start `process`; atomic outputs and validated chunks are reused.
-- `monitor`: use `status --json` and logs; never launch a duplicate runner.
+- `monitor`: use `python -m subtitle_pipeline --json status` and logs; never
+  launch a duplicate runner.
 - `resolve_failure`: inspect JSONL/human logs and the earliest invalid stage.
 - `validate`: run full validation, then generate bilingual outputs if requested.
 
@@ -34,11 +42,12 @@ authorization. Use `clean --dry-run` before proposing any cleanup.
 
 ## Failure handling
 
-Preserve completed atomic outputs. Quarantine suspect generated SRTs before
-replacement. For decode failures, inspect with FFprobe and test a short
-sequential FFmpeg decode. For repetition or hallucination, stop translation,
-identify the earliest bad chunk, adjust the quality gate, and rerun the sample.
+Preserve completed atomic outputs. Before manually replacing a suspect generated
+SRT, move it into `.subtitle-tools/quarantine/`. For decode failures, inspect
+with FFprobe and test a short sequential FFmpeg decode. For repetition or
+hallucination, stop translation, identify the earliest bad chunk, adjust the
+quality gate, and rerun the sample.
 
 The human-readable log is `.subtitle-tools/logs/pipeline.log`; structured status
-and manifests live under `.subtitle-tools/state`. Runtime paths are private and
-must never be committed.
+records, approvals, provenance, locks, and transcription checkpoints live under
+`.subtitle-tools/state`. Runtime paths are private and must never be committed.

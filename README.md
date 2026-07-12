@@ -23,16 +23,18 @@ Put source videos directly in `videos/`, then use the virtual-environment Python
 # Windows
 .venv\Scripts\python -m subtitle_pipeline --json doctor
 .venv\Scripts\python -m subtitle_pipeline --json inventory
+.venv\Scripts\python -m subtitle_pipeline --json status
 .venv\Scripts\python -m subtitle_pipeline sample --minutes 5
 
 # macOS
 .venv/bin/python -m subtitle_pipeline --json doctor
 .venv/bin/python -m subtitle_pipeline --json inventory
+.venv/bin/python -m subtitle_pipeline --json status
 .venv/bin/python -m subtitle_pipeline sample --minutes 5
 ```
 
 Inspect the sample files under `.subtitle-tools/sample`. Approve that exact
-backend/configuration only after a human spot check:
+pipeline fingerprint only after a human spot check:
 
 ```bash
 python -m subtitle_pipeline approve-sample --note "Japanese and Chinese sample reviewed"
@@ -45,7 +47,16 @@ python -m subtitle_pipeline bilingual
 
 Run these commands through `.venv` as shown above. The pipeline always finishes
 one video—Japanese transcription, Chinese translation, and title checkpoint—
-before moving to the next.
+before moving to the next. The first `process` invocation stops after one video;
+after that output is reviewed and approved, the second invocation processes the
+remaining collection.
+
+Sample and complete-video approvals are invalidated when configured backend,
+device, model path, chunk duration, or explicit transcription/translation prompt
+revisions change. Japanese outputs are reused only with matching video,
+output/clip, model, backend, and transcription provenance. Chinese outputs also
+require provenance for the exact Japanese source content and current translation
+pipeline.
 
 ## Backends
 
@@ -66,6 +77,10 @@ For `videos/example.mkv`:
 - `example.ja.srt`
 - `example.zh-Hans.srt`
 - `example.ja-zh-Hans.srt` — Simplified Chinese above Japanese
+
+These sidecars are written beside the source under `videos/`. Suggested Chinese
+titles are checkpointed in `.subtitle-tools/reports/title-mapping.csv`, and
+`validate` writes `.subtitle-tools/reports/validation.tsv`.
 
 Original videos are never rewritten. Generated files and all runtime data are
 ignored by Git.
