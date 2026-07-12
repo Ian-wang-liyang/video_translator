@@ -33,7 +33,8 @@ def emit(payload: dict, json_output: bool) -> None:
 def settings_fingerprint(settings: Settings) -> str:
     material = "|".join(
         [settings.transcription_backend, settings.translation_backend, settings.device,
-         str(settings.chunk_seconds), str(settings.whisper_model), str(settings.translation_model)]
+         str(settings.chunk_seconds), str(settings.whisper_model), str(settings.translation_model),
+         core.TRANSCRIPTION_REVISION, core.TRANSLATION_REVISION, core.TRANSLATION_PROMPT_REVISION]
     )
     return hashlib.sha256(material.encode()).hexdigest()
 

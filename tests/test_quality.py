@@ -1,3 +1,7 @@
+import json
+from pathlib import Path
+
+from subtitle_pipeline import core
 from subtitle_pipeline.core import Cue, cue_text_quality_error, filter_repetition_bursts, transcript_quality_errors
 
 
@@ -21,3 +25,57 @@ def test_empty_transcript_fails():
 def test_adjacent_duplicate_threshold_applies_to_short_chunks():
     cues = [Cue(i + 1, f"00:00:{i:02d},000 --> 00:00:{i:02d},500", "同じ") for i in range(30)]
     assert any("adjacent" in error or "repetition" in error for error in transcript_quality_errors(cues))
+
+
+class FakeTranscriber:
+    def transcribe(self, audio: str, *, clip_timestamps: str = "0") -> dict:
+        return {"segments": [{"start": 0, "end": 1, "text": "新しい字幕"}]}
+
+
+class FakeTranslator:
+    def __init__(self):
+        self.response = "[1] 新字幕"
+
+    def generate(self, instruction: str, max_tokens: int) -> str:
+        return self.response
+
+
+def write_srt(path: Path, text: str) -> None:
+    path.write_text(f"1\n00:00:00,000 --> 00:00:01,000\n{text}\n", encoding="utf-8")
+
+
+def test_sample_transcription_does_not_replace_full_output_provenance(tmp_path: Path, monkeypatch):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video")
+    full_output = tmp_path / "video.ja.srt"
+    sample_output = tmp_path / "sample" / "video.ja.srt"
+    sample_output.parent.mkdir()
+    state = tmp_path / "state"
+    monkeypatch.setattr(core, "STATE_DIR", state)
+    monkeypatch.setattr(core, "_TRANSCRIBER", FakeTranscriber())
+
+    full_metadata = core.provenance_path("transcription", full_output)
+    core.atomic_write(full_metadata, json.dumps({"fingerprint": "old-full"}))
+    core.transcribe_one(video, sample_output, clip="0,300")
+
+    assert json.loads(full_metadata.read_text())["fingerprint"] == "old-full"
+    assert core.provenance_path("transcription", sample_output) != full_metadata
+
+
+def test_translation_rebuilds_when_source_text_changes(tmp_path: Path, monkeypatch):
+    source = tmp_path / "video.ja.srt"
+    destination = tmp_path / "video.zh-Hans.srt"
+    state = tmp_path / "state"
+    monkeypatch.setattr(core, "STATE_DIR", state)
+    translator = FakeTranslator()
+
+    write_srt(source, "古い字幕")
+    write_srt(destination, "旧字幕")
+    metadata = core.provenance_path("translation", destination)
+    core.atomic_write(metadata, json.dumps({"fingerprint": core.translation_fingerprint(source)}))
+
+    write_srt(source, "新しい字幕")
+    core.translate_srt(translator, None, source, destination)
+
+    assert core.parse_srt(destination)[0].text == "新字幕"
+    assert json.loads(metadata.read_text())["fingerprint"] == core.translation_fingerprint(source)

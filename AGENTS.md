@@ -49,7 +49,9 @@ Bootstrap a fresh clone with `python scripts/bootstrap.py --backend auto
 - Reject empty, malformed, stale, misaligned, untranslated, internally
   repetitive, cross-cue repetitive, or implausibly long outputs.
 - Reuse Japanese outputs only when their provenance fingerprint matches the
-  current video, backend, model, and transcription revision.
+  current video, output/clip, backend, model, and transcription revision. Reuse
+  Chinese outputs only when their fingerprint matches the exact Japanese
+  source, backend, model, and translation/prompt revisions.
 - Write outputs atomically via `.partial`; preserve rejected outputs in
   `.subtitle-tools/quarantine/<timestamp>-<reason>/`.
 - A bilingual cue places Simplified Chinese above Japanese and is generated only

@@ -18,6 +18,21 @@ def test_explicit_cpu_configuration(tmp_path: Path):
     assert len(settings_fingerprint(settings)) == 64
 
 
+def test_pipeline_revisions_invalidate_approval_fingerprint(tmp_path: Path, monkeypatch):
+    settings = load_settings(tmp_path)
+    original = settings_fingerprint(settings)
+    monkeypatch.setattr("subtitle_pipeline.cli.core.TRANSCRIPTION_REVISION", "chunked-v2")
+    assert settings_fingerprint(settings) != original
+
+    monkeypatch.setattr("subtitle_pipeline.cli.core.TRANSCRIPTION_REVISION", "chunked-v1")
+    monkeypatch.setattr("subtitle_pipeline.cli.core.TRANSLATION_REVISION", "batched-v2")
+    assert settings_fingerprint(settings) != original
+
+    monkeypatch.setattr("subtitle_pipeline.cli.core.TRANSLATION_REVISION", "batched-v1")
+    monkeypatch.setattr("subtitle_pipeline.cli.core.TRANSLATION_PROMPT_REVISION", "ja-zh-hans-v2")
+    assert settings_fingerprint(settings) != original
+
+
 def test_example_config_is_valid():
     root = Path(__file__).resolve().parents[1]
     import tomllib

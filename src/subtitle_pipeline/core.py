@@ -30,6 +30,8 @@ STATE_DIR = TOOLS / "state"
 REPORT_DIR = TOOLS / "reports"
 VIDEO_EXTENSIONS = {".avi", ".mp4", ".mkv", ".mov", ".webm"}
 TRANSCRIPTION_REVISION = "chunked-v1"
+TRANSLATION_REVISION = "batched-v1"
+TRANSLATION_PROMPT_REVISION = "ja-zh-hans-v1"
 CHUNK_SECONDS = SETTINGS.chunk_seconds
 _TRANSCRIBER = None
 JSON_OUTPUT = False
@@ -79,6 +81,30 @@ def atomic_write(path: Path, text: str) -> None:
     temporary = path.with_suffix(path.suffix + ".partial")
     temporary.write_text(text, encoding="utf-8")
     temporary.replace(path)
+
+
+def provenance_path(stage: str, output: Path) -> Path:
+    """Return an output-specific provenance record path."""
+    output_key = hashlib.sha256(str(output.resolve()).encode()).hexdigest()
+    return STATE_DIR / stage / "outputs" / f"{output_key}.json"
+
+
+def transcription_fingerprint(video: Path, output: Path, clip: str) -> str:
+    material = (
+        f"{video.resolve()}|{video.stat().st_size}|{video.stat().st_mtime_ns}|"
+        f"{output.resolve()}|{clip}|{TRANSCRIPTION_REVISION}|{SETTINGS.transcription_backend}|"
+        f"{SETTINGS.device}|{WHISPER_MODEL}"
+    )
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
+def translation_fingerprint(source: Path) -> str:
+    source_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    material = (
+        f"{source.resolve()}|{source_digest}|{TRANSLATION_REVISION}|{TRANSLATION_PROMPT_REVISION}|"
+        f"{SETTINGS.translation_backend}|{SETTINGS.device}|{TRANSLATION_MODEL}"
+    )
+    return hashlib.sha256(material.encode()).hexdigest()
 
 
 def srt_timestamp(seconds: float) -> str:
@@ -236,11 +262,8 @@ def transcript_quality_errors(cues: list[Cue]) -> list[str]:
 
 
 def transcribe_one(video: Path, output: Path, clip: str = "0") -> None:
-    fingerprint = hashlib.sha256(
-        f"{video.resolve()}|{video.stat().st_size}|{video.stat().st_mtime_ns}|"
-        f"{TRANSCRIPTION_REVISION}|{WHISPER_MODEL}".encode()
-    ).hexdigest()
-    metadata = STATE_DIR / "transcription" / f"{hashlib.sha256(video.name.encode()).hexdigest()}.json"
+    fingerprint = transcription_fingerprint(video, output, clip)
+    metadata = provenance_path("transcription", output)
     if output.exists():
         try:
             existing = parse_srt(output)
@@ -419,6 +442,8 @@ def translate_srt(model, tokenizer, source: Path, destination: Path) -> None:
     quality_errors = transcript_quality_errors(source_cues)
     if quality_errors:
         raise ValueError(f"Japanese source failed quality validation: {'; '.join(quality_errors)}")
+    fingerprint = translation_fingerprint(source)
+    metadata = provenance_path("translation", destination)
     if destination.exists():
         try:
             existing = parse_srt(destination)
@@ -431,10 +456,14 @@ def translate_srt(model, tokenizer, source: Path, destination: Path) -> None:
             )
         except (ValueError, TypeError):
             aligned = False
-        if aligned:
-            log(f"SKIP translation (complete aligned output exists): {destination.name}")
+        try:
+            current = json.loads(metadata.read_text(encoding="utf-8"))["fingerprint"] == fingerprint
+        except Exception:
+            current = False
+        if aligned and current:
+            log(f"SKIP translation (complete aligned current output exists): {destination.name}")
             return
-        log(f"REBUILD stale, incomplete, or misaligned translation: {destination.name}")
+        log(f"REBUILD stale, incomplete, misaligned, or unproven translation: {destination.name}")
     translated: list[Cue] = []
     log(f"START translation: {source.name}")
     for offset in range(0, len(source_cues), 10):
@@ -446,6 +475,7 @@ def translate_srt(model, tokenizer, source: Path, destination: Path) -> None:
         )
         log(f"Translation progress {source.name}: {len(translated)}/{len(source_cues)} cues")
     atomic_write(destination, cues_to_srt(translated))
+    atomic_write(metadata, json.dumps({"fingerprint": fingerprint}, indent=2) + "\n")
     log(f"DONE translation: {destination.name}")
 
 
