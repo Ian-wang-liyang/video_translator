@@ -74,6 +74,9 @@ Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
 
 - Process one video at a time: transcribe, validate Japanese, translate, validate
   Chinese, then advance. Do not translate or rename video titles.
+- On Windows, every locked sample or processing run must hold a system-sleep
+  inhibition request for its full lifetime and release it on every exit path.
+  The display may still turn off; do not change persistent OS power-plan settings.
 - Decode long media sequentially into temporary five-minute mono PCM chunks.
   Validate and checkpoint each chunk, then delete temporary audio.
 - Use temperature fallback and `condition_on_previous_text=False` for MLX

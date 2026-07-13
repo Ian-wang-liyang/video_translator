@@ -160,6 +160,36 @@ def windows_process_alive(pid: int) -> bool:
     return True
 
 
+def windows_sleep_inhibit(enable: bool) -> None:
+    """Request or release Windows system-sleep prevention for this thread."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    set_execution_state = kernel32.SetThreadExecutionState
+    set_execution_state.argtypes = [wintypes.DWORD]
+    set_execution_state.restype = wintypes.DWORD
+    continuous = 0x80000000
+    system_required = 0x00000001
+    flags = continuous | system_required if enable else continuous
+    if set_execution_state(flags) == 0:
+        action = "enable" if enable else "release"
+        raise OSError(ctypes.get_last_error(), f"could not {action} Windows sleep inhibition")
+
+
+@contextmanager
+def prevent_system_sleep():
+    """Keep Windows awake while a locked inference operation is active."""
+    if os.name != "nt":
+        yield
+        return
+    windows_sleep_inhibit(True)
+    try:
+        yield
+    finally:
+        windows_sleep_inhibit(False)
+
+
 def read_lock_owner(lock: Path) -> tuple[int, str]:
     owner_path = lock / "owner.json" if lock.is_dir() else lock
     owner = json.loads(owner_path.read_text(encoding="utf-8"))
@@ -226,7 +256,8 @@ def run_lock(settings: Settings):
                     lock.unlink()
     pid_file.write_text(f"{pid}\n", encoding="utf-8")
     try:
-        yield
+        with prevent_system_sleep():
+            yield
     finally:
         try:
             _, current_token = read_lock_owner(lock)

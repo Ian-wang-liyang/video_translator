@@ -54,6 +54,10 @@ next. The first `process` invocation stops after one video;
 after that output is reviewed and approved, the second invocation processes the
 remaining collection.
 
+On Windows, locked `sample` and `process` runs automatically request that the
+system stay awake until the command exits. This does not force the display to
+remain on and does not modify the machine's persistent power-plan settings.
+
 `sample --minutes` requires a positive duration. If `--video` is supplied, it
 must select a supported top-level video listed by `inventory`.
 

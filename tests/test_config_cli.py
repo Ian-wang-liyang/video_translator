@@ -10,6 +10,7 @@ from subtitle_pipeline.cli import (
     ActiveRunnerError,
     approve_sample,
     build_parser,
+    prevent_system_sleep,
     run_lock,
     runner_lock_state,
     sample_review_is_current,
@@ -200,6 +201,29 @@ def test_process_alive_uses_non_signaling_windows_check(monkeypatch):
 
     assert cli.process_alive(1234)
     assert checked == [1234]
+
+
+def test_prevent_system_sleep_wraps_windows_work(monkeypatch):
+    calls: list[bool] = []
+    monkeypatch.setattr(cli.os, "name", "nt")
+    monkeypatch.setattr(cli, "windows_sleep_inhibit", calls.append)
+
+    with prevent_system_sleep():
+        assert calls == [True]
+
+    assert calls == [True, False]
+
+
+def test_prevent_system_sleep_releases_after_failure(monkeypatch):
+    calls: list[bool] = []
+    monkeypatch.setattr(cli.os, "name", "nt")
+    monkeypatch.setattr(cli, "windows_sleep_inhibit", calls.append)
+
+    with pytest.raises(RuntimeError, match="inference failed"):
+        with prevent_system_sleep():
+            raise RuntimeError("inference failed")
+
+    assert calls == [True, False]
 
 
 def test_empty_project_requests_videos(tmp_path: Path, monkeypatch):

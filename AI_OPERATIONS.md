@@ -66,6 +66,9 @@ Faster-whisper always decodes the unchanged five-minute PCM chunks in independen
 threshold before normal quality validation.
 An explicitly user-authorized sample bypass must name one inventory video and
 use `process --video PATH --skip-sample-gate`; it must stop for full-video review.
+On Windows, the runner lock also holds a system-sleep inhibition request for the
+entire sample or processing operation and releases it when the command exits.
+The display power policy is intentionally left unchanged.
 
 The human-readable log is `.subtitle-tools/logs/pipeline.log`; structured status
 records, approvals, provenance, locks, and transcription checkpoints live under
