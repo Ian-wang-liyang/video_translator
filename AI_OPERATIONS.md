@@ -67,3 +67,5 @@ the unchanged PCM chunk in independent 30-second windows before failing it.
 The human-readable log is `.subtitle-tools/logs/pipeline.log`; structured status
 records, approvals, provenance, locks, and transcription checkpoints live under
 `.subtitle-tools/state`. Runtime paths are private and must never be committed.
+The pipeline never translates or renames source video titles; processing and
+validation cover subtitle artifacts only.

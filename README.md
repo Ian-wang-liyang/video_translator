@@ -49,8 +49,8 @@ python -m subtitle_pipeline bilingual
 ```
 
 Run these commands through `.venv` as shown above. The pipeline always finishes
-one video—Japanese transcription, Chinese translation, and title checkpoint—
-before moving to the next. The first `process` invocation stops after one video;
+one video—Japanese transcription and Chinese translation—before moving to the
+next. The first `process` invocation stops after one video;
 after that output is reviewed and approved, the second invocation processes the
 remaining collection.
 
@@ -99,9 +99,9 @@ For `videos/example.mkv`:
 - `example.zh-Hans.srt`
 - `example.ja-zh-Hans.srt` — Simplified Chinese above Japanese
 
-These sidecars are written beside the source under `videos/`. Suggested Chinese
-titles are checkpointed in `.subtitle-tools/reports/title-mapping.csv`, and
-`validate` writes `.subtitle-tools/reports/validation.tsv`.
+These sidecars are written beside the source under `videos/`. `validate` writes
+`.subtitle-tools/reports/validation.tsv`. Video titles are never translated or
+renamed.
 
 Original videos are never rewritten. Generated files and all runtime data are
 ignored by Git.

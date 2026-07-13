@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import csv
 import gc
 import hashlib
 import json
@@ -456,11 +455,10 @@ def parse_numbered_response(response: str, count: int) -> list[str] | None:
     return [found[number] for number in range(1, count + 1)]
 
 
-def translate_group(model, tokenizer, texts: list[str], *, titles: bool = False) -> list[str]:
-    kind = "video titles" if titles else "subtitle cues"
+def translate_group(model, tokenizer, texts: list[str]) -> list[str]:
     numbered = "\n".join(f"[{i}] {text}" for i, text in enumerate(texts, 1))
     instruction = (
-        f"Translate these Japanese {kind} into natural, concise Simplified Chinese.\n"
+        "Translate these Japanese subtitle cues into natural, concise Simplified Chinese.\n"
         "Preserve names, episode/catalogue codes, numbers, and meaning. Render Japanese names "
         "in suitable Chinese characters or Chinese phonetic transcription. Do not censor or summarize.\n"
         "Return exactly one translated item for every input using the same [number] markers.\n"
@@ -484,12 +482,10 @@ def translate_group(model, tokenizer, texts: list[str], *, titles: bool = False)
     if len(texts) > 1:
         output: list[str] = []
         for text in texts:
-            output.extend(translate_group(model, tokenizer, [text], titles=titles))
+            output.extend(translate_group(model, tokenizer, [text]))
         return output
-    if not titles:
-        log(f"WARN using unclear-speech fallback for cue: {texts[0]!r}")
-        return ["（日语发音不清）"]
-    raise RuntimeError(f"Could not parse translation response: {response[:300]!r}")
+    log(f"WARN using unclear-speech fallback for cue: {texts[0]!r}")
+    return ["（日语发音不清）"]
 
 
 def translate_srt(model, tokenizer, source: Path, destination: Path) -> None:
@@ -537,55 +533,10 @@ def translate_srt(model, tokenizer, source: Path, destination: Path) -> None:
     log(f"DONE translation: {destination.name}")
 
 
-def translate_titles(model, tokenizer) -> None:
-    items = videos()
-    translated: list[str] = []
-    for offset in range(0, len(items), 8):
-        translated.extend(
-            translate_group(model, tokenizer, [p.stem for p in items[offset : offset + 8]], titles=True)
-        )
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    temporary = REPORT_DIR / "title-mapping.csv.partial"
-    with temporary.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["original_filename", "suggested_simplified_chinese_title"])
-        for path, title in zip(items, translated, strict=True):
-            writer.writerow([path.name, title])
-    temporary.replace(REPORT_DIR / "title-mapping.csv")
-    log("DONE translated title mapping: .subtitle-tools/reports/title-mapping.csv")
-
-
-def existing_title_mapping() -> dict[str, str]:
-    path = REPORT_DIR / "title-mapping.csv"
-    if not path.exists():
-        return {}
-    with path.open(encoding="utf-8-sig", newline="") as handle:
-        return {
-            row["original_filename"]: row["suggested_simplified_chinese_title"]
-            for row in csv.DictReader(handle)
-            if row.get("original_filename") and row.get("suggested_simplified_chinese_title")
-        }
-
-
-def checkpoint_title(model, tokenizer, video: Path, mapping: dict[str, str]) -> None:
-    if video.name not in mapping:
-        mapping[video.name] = translate_group(model, tokenizer, [video.stem], titles=True)[0]
-    temporary = REPORT_DIR / "title-mapping.csv.partial"
-    with temporary.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["original_filename", "suggested_simplified_chinese_title"])
-        for item in videos():
-            if item.name in mapping:
-                writer.writerow([item.name, mapping[item.name]])
-    temporary.replace(REPORT_DIR / "title-mapping.csv")
-    log(f"DONE title checkpoint: {video.name}")
-
-
 def process_collection(max_videos: int | None = None) -> None:
-    """Finish transcription, translation, and title for one video at a time."""
+    """Finish transcription and translation for one video at a time."""
     transcription_failures: list[str] = []
     translation_failures: list[str] = []
-    titles = existing_title_mapping()
     items = videos()[:max_videos] if max_videos is not None else videos()
     for video in items:
         japanese = video.with_suffix(".ja.srt")
@@ -604,11 +555,10 @@ def process_collection(max_videos: int | None = None) -> None:
         try:
             model, tokenizer = load_translator()
             translate_srt(model, tokenizer, japanese, chinese)
-            checkpoint_title(model, tokenizer, video, titles)
             log(f"DONE video: {video.name}")
         except Exception as exc:
             translation_failures.append(video.name)
-            log(f"ERROR translation/title {video.name}: {type(exc).__name__}: {exc}")
+            log(f"ERROR translation {video.name}: {type(exc).__name__}: {exc}")
         finally:
             if model is not None:
                 del model
@@ -627,7 +577,7 @@ def process_collection(max_videos: int | None = None) -> None:
     if transcription_failures or translation_failures:
         raise RuntimeError(
             f"Per-video processing failed: {len(transcription_failures)} transcription, "
-            f"{len(translation_failures)} translation/title"
+            f"{len(translation_failures)} translation"
         )
 
 
@@ -635,11 +585,6 @@ def translate_folder() -> None:
     model, tokenizer = load_translator()
     failures: list[str] = []
     try:
-        try:
-            translate_titles(model, tokenizer)
-        except Exception as exc:
-            failures.append("title mapping")
-            log(f"ERROR title mapping: {type(exc).__name__}: {exc}")
         for video in videos():
             source = video.with_suffix(".ja.srt")
             destination = video.with_suffix(".zh-Hans.srt")
@@ -742,22 +687,6 @@ def validate() -> None:
             else:
                 report.append(f"FAIL\t{video.name}\tJapanese/Chinese cue count, index, or timing mismatch")
                 failures += 1
-    try:
-        title_path = REPORT_DIR / "title-mapping.csv"
-        with title_path.open(encoding="utf-8-sig", newline="") as handle:
-            raw_title_rows = list(csv.DictReader(handle))
-        title_rows = existing_title_mapping()
-        expected_names = {video.name for video in videos()}
-        if len(raw_title_rows) != len(title_rows):
-            raise ValueError("duplicate or incomplete title mapping rows")
-        if set(title_rows) != expected_names:
-            missing = sorted(expected_names - set(title_rows))
-            extra = sorted(set(title_rows) - expected_names)
-            raise ValueError(f"missing={missing}; extra={extra}")
-        report.append(f"PASS\ttitle-mapping.csv\t{len(title_rows)} unique rows")
-    except Exception as exc:
-        report.append(f"FAIL\ttitle-mapping.csv\t{exc}")
-        failures += 1
     atomic_write(REPORT_DIR / "validation.tsv", "\n".join(report) + "\n")
     log(f"Validation complete: {failures} failure(s)")
     if failures:

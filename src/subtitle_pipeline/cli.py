@@ -97,8 +97,6 @@ def video_gate_fingerprint(settings: Settings, video: Path) -> str:
         raise ConfigurationError(
             "first-video outputs are not aligned, quality-valid, and current; rerun process before approval"
         )
-    if not core.existing_title_mapping().get(video.name):
-        raise ConfigurationError("the first video has no completed title checkpoint; rerun process before approval")
     stat = video.stat()
     material = "|".join(
         [settings_fingerprint(settings), video.name, str(stat.st_size), str(stat.st_mtime_ns),

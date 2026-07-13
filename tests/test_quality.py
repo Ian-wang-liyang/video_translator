@@ -1,4 +1,3 @@
-import csv
 import json
 from pathlib import Path
 
@@ -172,10 +171,6 @@ def test_full_validation_rejects_stale_provenance(tmp_path: Path, monkeypatch):
     state = tmp_path / "state"
     reports = tmp_path / "reports"
     reports.mkdir()
-    with (reports / "title-mapping.csv").open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["original_filename", "suggested_simplified_chinese_title"])
-        writer.writerow([video.name, "视频"])
     monkeypatch.setattr(core, "STATE_DIR", state)
     monkeypatch.setattr(core, "REPORT_DIR", reports)
     monkeypatch.setattr(core, "VIDEO_DIR", tmp_path)

@@ -73,7 +73,7 @@ Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
 ## Processing invariants
 
 - Process one video at a time: transcribe, validate Japanese, translate, validate
-  Chinese, checkpoint title, then advance.
+  Chinese, then advance. Do not translate or rename video titles.
 - Decode long media sequentially into temporary five-minute mono PCM chunks.
   Validate and checkpoint each chunk, then delete temporary audio.
 - Use temperature fallback and `condition_on_previous_text=False` for MLX
@@ -125,5 +125,5 @@ Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
 
 Only report completion after validation succeeds. Include video count/duration,
 Japanese and Chinese success/failure counts, unresolved warnings, report paths,
-elapsed time, disk use, title/bilingual status, confirmation originals were not
+elapsed time, disk use, bilingual status, confirmation originals were not
 modified, and whether retained models permit immediate offline reuse.
