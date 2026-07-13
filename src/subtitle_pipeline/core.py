@@ -16,6 +16,7 @@ import wave
 import zlib
 from array import array
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from .backends import load_transcriber, load_translation_backend
@@ -31,7 +32,7 @@ LOG_DIR = TOOLS / "logs"
 STATE_DIR = TOOLS / "state"
 REPORT_DIR = TOOLS / "reports"
 VIDEO_EXTENSIONS = {".avi", ".mp4", ".mkv", ".mov", ".webm"}
-TRANSCRIPTION_REVISION = "foreground-windowed-v5"
+TRANSCRIPTION_REVISION = "overlap-confidence-rescue-v6"
 TRANSLATION_REVISION = "contextual-batched-v2"
 TRANSLATION_PROMPT_REVISION = "ja-zh-hans-v2"
 CHUNK_SECONDS = SETTINGS.chunk_seconds
@@ -41,6 +42,12 @@ TIMING_RE = re.compile(
     r"^(\d{2,}):(\d{2}):(\d{2}),(\d{3}) --> "
     r"(\d{2,}):(\d{2}):(\d{2}),(\d{3})$"
 )
+RESCUE_SILENCE_HALLUCINATIONS = {
+    "ご視聴ありがとうございました",
+    "ご視聴ありがとうございます",
+    "ありがとうございました",
+    "お疲れ様でした",
+}
 
 
 @dataclass
@@ -109,7 +116,10 @@ def transcription_fingerprint(video: Path, output: Path, clip: str) -> str:
     material = (
         f"{video.resolve()}|{video.stat().st_size}|{video.stat().st_mtime_ns}|"
         f"{output.resolve()}|{clip}|{TRANSCRIPTION_REVISION}|{SETTINGS.transcription_backend}|"
-        f"{SETTINGS.device}|{WHISPER_MODEL}"
+        f"{SETTINGS.device}|{WHISPER_MODEL}|{SETTINGS.specialist_model}|{SETTINGS.chunk_seconds}|"
+        f"{SETTINGS.decode_window_seconds}|{SETTINGS.window_overlap_seconds}|{SETTINGS.vad_threshold}|"
+        f"{SETTINGS.foreground_min_dbfs}|{SETTINGS.rescue_activity_dbfs}|"
+        f"{SETTINGS.rescue_flag_logprob}|{SETTINGS.rescue_accept_logprob}"
     )
     return hashlib.sha256(material.encode()).hexdigest()
 
@@ -323,19 +333,240 @@ def filter_foreground_segments(
     return kept
 
 
-def transcribe_chunk_segments(audio_chunk: Path, duration: float) -> list[dict]:
-    """Transcribe one PCM chunk as independent short windows and keep foreground speech."""
-    recovered: list[dict] = []
-    start = 0
+def decode_windows(duration: float) -> list[tuple[float, float, float, float]]:
+    """Return overlapping decode and non-overlapping ownership intervals."""
+    window = SETTINGS.decode_window_seconds
+    overlap = SETTINGS.window_overlap_seconds
+    step = window - overlap
+    starts: list[float] = []
+    start = 0.0
     while start < duration:
-        end = min(duration, start + SETTINGS.decode_window_seconds)
+        starts.append(start)
+        start += step
+    windows: list[tuple[float, float, float, float]] = []
+    for index, start in enumerate(starts):
+        end = min(duration, start + window)
+        owned_start = start if index == 0 else start + overlap / 2
+        owned_end = end if index == len(starts) - 1 else end - overlap / 2
+        windows.append((start, end, owned_start, owned_end))
+    return windows
+
+
+def segment_logprob(segment: dict) -> float:
+    try:
+        return float(segment.get("avg_logprob", -99.0))
+    except (TypeError, ValueError):
+        return -99.0
+
+
+def pcm_activity_intervals(audio_chunk: Path, threshold: float) -> tuple[list[tuple[float, float]], float]:
+    """Find sustained high-energy intervals and return their PCM clipping ratio."""
+    with wave.open(str(audio_chunk), "rb") as handle:
+        if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
+            raise ValueError(f"activity analysis requires mono 16-bit PCM: {audio_chunk}")
+        sample_rate = handle.getframerate()
+        samples = array("h", handle.readframes(handle.getnframes()))
+    if not samples:
+        return [], 0.0
+    clipping_ratio = sum(abs(sample) >= 32700 for sample in samples) / len(samples)
+    frame_size = max(1, round(sample_rate * 0.1))
+    active_frames: list[tuple[float, float]] = []
+    for position in range(0, len(samples), frame_size):
+        frame = samples[position : position + frame_size]
+        rms = math.sqrt(sum(sample * sample for sample in frame) / len(frame))
+        dbfs = 20 * math.log10(max(rms, 1) / 32768)
+        if dbfs >= threshold:
+            active_frames.append((position / sample_rate, min(len(samples), position + len(frame)) / sample_rate))
+    intervals: list[tuple[float, float]] = []
+    for start, end in active_frames:
+        if intervals and start - intervals[-1][1] <= 0.2:
+            intervals[-1] = (intervals[-1][0], end)
+        else:
+            intervals.append((start, end))
+    return [(start, end) for start, end in intervals if end - start >= 0.2], clipping_ratio
+
+
+def interval_coverage(start: float, end: float, segments: list[dict]) -> float:
+    covered = sum(
+        max(0.0, min(end, float(segment.get("end", 0))) - max(start, float(segment.get("start", 0))))
+        for segment in segments
+    )
+    return min(1.0, covered / max(0.001, end - start))
+
+
+def rescue_intervals(
+    activity: list[tuple[float, float]], segments: list[dict], duration: float
+) -> list[tuple[float, float]]:
+    """Select uncovered loud audio and low-confidence recognized speech for retry."""
+    selected = [(start, end) for start, end in activity if interval_coverage(start, end, segments) < 0.2]
+    selected.extend(
+        (float(segment.get("start", 0)), float(segment.get("end", 0)))
+        for segment in segments
+        if segment_logprob(segment) < SETTINGS.rescue_flag_logprob
+    )
+    padded = sorted((max(0.0, start - 1.0), min(duration, end + 1.0)) for start, end in selected)
+    merged: list[tuple[float, float]] = []
+    for start, end in padded:
+        if merged and start - merged[-1][1] <= 0.5 and end - merged[-1][0] <= 15.0:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            cursor = start
+            while end - cursor > 15.0:
+                merged.append((cursor, cursor + 15.0))
+                cursor += 14.0
+            merged.append((cursor, end))
+    return [(start, end) for start, end in merged if end - start >= 0.2]
+
+
+def normalized_segment_text(segments: list[dict]) -> str:
+    return re.sub(r"[^\w\u3040-\u30ff\u4e00-\u9fff]", "", "".join(str(s.get("text", "")) for s in segments))
+
+
+def valid_rescue_segments(segments: list[dict]) -> list[dict]:
+    return [
+        segment
+        for segment in segments
+        if str(segment.get("text", "")).strip()
+        and cue_text_quality_error(str(segment.get("text", ""))) is None
+        and re.sub(r"[^\w\u3040-\u30ff\u4e00-\u9fff]", "", str(segment.get("text", "")))
+        not in RESCUE_SILENCE_HALLUCINATIONS
+        and segment_logprob(segment) >= SETTINGS.rescue_accept_logprob
+    ]
+
+
+def choose_rescue(primary: list[dict], specialist: list[dict]) -> list[dict]:
+    """Require cross-model agreement unless one model is independently strong."""
+    primary = valid_rescue_segments(primary)
+    specialist = valid_rescue_segments(specialist)
+    primary_text = normalized_segment_text(primary)
+    specialist_text = normalized_segment_text(specialist)
+    if primary_text and specialist_text:
+        agreement = SequenceMatcher(None, primary_text, specialist_text).ratio()
+        if agreement >= 0.3:
+            return primary
+        log(f"REJECT rescue candidate: specialist agreement {agreement:.2f} < 0.30")
+        return []
+    candidate = primary or specialist
+    if candidate and min(segment_logprob(segment) for segment in candidate) >= -0.55:
+        return candidate
+    return []
+
+
+def merge_rescue_segments(primary: list[dict], rescue: list[dict]) -> list[dict]:
+    merged = list(primary)
+    for candidate in rescue:
+        start = float(candidate.get("start", 0))
+        end = float(candidate.get("end", 0))
+        matches = [
+            index
+            for index, existing in enumerate(merged)
+            if max(0.0, min(end, float(existing.get("end", 0))) - max(start, float(existing.get("start", 0))))
+            >= 0.3 * max(0.1, min(end - start, float(existing.get("end", 0)) - float(existing.get("start", 0))))
+        ]
+        if not matches:
+            merged.append(candidate)
+        elif len(matches) == 1:
+            existing = merged[matches[0]]
+            if (
+                segment_logprob(existing) < SETTINGS.rescue_flag_logprob
+                and segment_logprob(candidate) > segment_logprob(existing) + 0.1
+            ):
+                merged[matches[0]] = candidate
+    return sorted(merged, key=lambda segment: (float(segment.get("start", 0)), float(segment.get("end", 0))))
+
+
+def prepare_rescue_audio(audio_chunk: Path, clipping_ratio: float) -> Path:
+    if clipping_ratio < 0.0005:
+        return audio_chunk
+    repaired = audio_chunk.with_name(audio_chunk.stem + "-rescue.wav")
+    result = subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(audio_chunk),
+            "-af", "adeclip", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(repaired),
+        ],
+        capture_output=True,
+        text=True,
+        errors="replace",
+    )
+    if result.returncode != 0:
+        repaired.unlink(missing_ok=True)
+        log("WARN clipping repair failed; rescue will use original PCM")
+        return audio_chunk
+    log(f"RESCUE using de-clipped PCM ({clipping_ratio:.3%} clipped samples)")
+    return repaired
+
+
+def decode_pcm_clip(source: Path, destination: Path, start: float, duration: float) -> tuple[float, str]:
+    """Decode one bounded mono PCM clip and return actual duration plus warnings."""
+    decode = subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
+            "-ss", str(start), "-i", str(source), "-t", str(duration),
+            "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
+            "-c:a", "pcm_s16le", str(destination),
+        ],
+        capture_output=True,
+        text=True,
+        errors="replace",
+    )
+    if decode.returncode != 0 or not destination.is_file():
+        raise RuntimeError(f"FFmpeg failed decoding audio at {start:.3f}s with exit code {decode.returncode}")
+    duration_result = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=nw=1:nk=1", str(destination),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return float(duration_result.stdout.strip()), decode.stderr.strip()
+
+
+def transcribe_chunk_segments(audio_chunk: Path, duration: float) -> list[dict]:
+    """Decode overlap-owned windows, then rescue uncovered or uncertain loud speech."""
+    primary: list[dict] = []
+    for start, end, owned_start, owned_end in decode_windows(duration):
         result = _TRANSCRIBER.transcribe(
             str(audio_chunk), clip_timestamps=f"{start},{end}"
         )
-        recovered.extend(result.get("segments", []))
-        start += SETTINGS.decode_window_seconds
-    foreground = filter_foreground_segments(audio_chunk, recovered)
-    return filter_repetition_bursts(foreground)
+        primary.extend(
+            segment
+            for segment in result.get("segments", [])
+            if owned_start <= (float(segment.get("start", 0)) + float(segment.get("end", 0))) / 2 < owned_end
+        )
+    primary = filter_foreground_segments(audio_chunk, primary)
+    activity, clipping_ratio = pcm_activity_intervals(audio_chunk, SETTINGS.rescue_activity_dbfs)
+    intervals = rescue_intervals(activity, primary, duration)
+    if not intervals:
+        return filter_repetition_bursts(primary)
+    log(f"RESCUE reviewing {len(intervals)} loud-gap/low-confidence interval(s)")
+    rescue_audio = prepare_rescue_audio(audio_chunk, clipping_ratio)
+    recovered: list[dict] = []
+    try:
+        clips = [f"{start},{end}" for start, end in intervals]
+        primary_retries = [
+            _TRANSCRIBER.transcribe(
+                str(rescue_audio), clip_timestamps=clip, rescue=True
+            ).get("segments", [])
+            for clip in clips
+        ]
+        specialist_retries = (
+            _TRANSCRIBER.transcribe_specialist_batch(str(rescue_audio), clips)
+            if SETTINGS.specialist_model is not None
+            else [[] for _ in clips]
+        )
+        for primary_retry, specialist_retry in zip(
+            primary_retries, specialist_retries, strict=True
+        ):
+            chosen = choose_rescue(primary_retry, specialist_retry)
+            recovered.extend(filter_foreground_segments(audio_chunk, chosen))
+    finally:
+        if rescue_audio != audio_chunk:
+            rescue_audio.unlink(missing_ok=True)
+    if recovered:
+        log(f"RESCUE accepted {len(recovered)} segment(s)")
+    return filter_repetition_bursts(merge_rescue_segments(primary, recovered))
 
 
 def transcribe_one(video: Path, output: Path, clip: str = "0") -> None:
@@ -365,34 +596,43 @@ def transcribe_one(video: Path, output: Path, clip: str = "0") -> None:
     log(f"START transcription: {video.name}")
     started = time.monotonic()
     if clip != "0":
-        result = _TRANSCRIBER.transcribe(str(video), clip_timestamps=clip)
-        rendered = segments_to_srt(filter_repetition_bursts(result.get("segments", [])))
+        clip_start, clip_end = (float(value) for value in clip.split(",", 1))
+        if clip_end <= clip_start:
+            raise ValueError("transcription clip end must be after its start")
+        audio_dir = TOOLS / "cache" / "audio" / fingerprint
+        audio_chunk = audio_dir / "sample.wav"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            clip_duration, warnings = decode_pcm_clip(video, audio_chunk, clip_start, clip_end - clip_start)
+            if warnings:
+                report = REPORT_DIR / "decode-warnings" / f"{fingerprint}.log"
+                atomic_write(report, warnings + "\n")
+                log(f"WARN source decode issues recorded: {report}")
+            adjusted = []
+            for segment in transcribe_chunk_segments(audio_chunk, clip_duration):
+                segment = dict(segment)
+                segment["start"] = float(segment.get("start", 0)) + clip_start
+                segment["end"] = float(segment.get("end", 0)) + clip_start
+                adjusted.append(segment)
+            rendered = segments_to_srt(adjusted)
+        finally:
+            shutil.rmtree(audio_dir, ignore_errors=True)
     else:
         checkpoint_dir = STATE_DIR / "transcription" / fingerprint
         audio_dir = TOOLS / "cache" / "audio" / fingerprint
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         audio_dir.mkdir(parents=True, exist_ok=True)
+        decode_warnings: list[str] = []
+        warning_report = REPORT_DIR / "decode-warnings" / f"{fingerprint}.log"
         try:
-            subprocess.run(
-                ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-i", str(video),
-                 "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
-                 "-c:a", "pcm_s16le", "-f", "segment", "-segment_time", str(CHUNK_SECONDS),
-                 "-reset_timestamps", "1", str(audio_dir / "chunk-%04d.wav")],
-                check=True,
-            )
             blocks: list[str] = []
             cue_number = 1
-            offset = 0.0
-            chunks = sorted(audio_dir.glob("chunk-*.wav"))
-            if not chunks:
-                raise RuntimeError("FFmpeg produced no audio chunks")
-            for number, audio_chunk in enumerate(chunks):
-                duration_result = subprocess.run(
-                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                     "-of", "default=nw=1:nk=1", str(audio_chunk)],
-                    check=True, capture_output=True, text=True,
-                )
-                chunk_duration = float(duration_result.stdout.strip())
+            video_duration = video_duration_ms(video) / 1000
+            chunk_count = max(1, math.ceil(video_duration / CHUNK_SECONDS))
+            for number in range(chunk_count):
+                offset = number * CHUNK_SECONDS
+                expected_duration = min(CHUNK_SECONDS, max(0.0, video_duration - offset))
+                audio_chunk = audio_dir / f"chunk-{number:04d}.wav"
                 checkpoint = checkpoint_dir / f"chunk-{number:04d}.srt"
                 if checkpoint.exists():
                     chunk_cues = parse_srt(checkpoint)
@@ -403,30 +643,58 @@ def transcribe_one(video: Path, output: Path, clip: str = "0") -> None:
                 else:
                     chunk_cues = []
                 if not chunk_cues:
-                    adjusted = []
-                    for segment in transcribe_chunk_segments(audio_chunk, chunk_duration):
-                        segment = dict(segment)
-                        segment["start"] = float(segment.get("start", 0)) + offset
-                        segment["end"] = float(segment.get("end", 0)) + offset
-                        adjusted.append(segment)
-                    chunk_text = segments_to_srt(adjusted)
-                    atomic_write(checkpoint, chunk_text)
-                    chunk_cues = parse_srt(checkpoint)
-                    chunk_errors = transcript_quality_errors(chunk_cues)
-                    if chunk_errors:
-                        raise RuntimeError(
-                            f"chunk {number + 1}/{len(chunks)} failed quality validation: "
-                            + "; ".join(chunk_errors)
+                    try:
+                        chunk_duration, warnings = decode_pcm_clip(
+                            video, audio_chunk, offset, expected_duration
                         )
+                        if warnings:
+                            decode_warnings.append(
+                                f"chunk {number + 1}/{chunk_count} at {offset:.3f}s\n{warnings}"
+                            )
+                        adjusted = []
+                        for segment in transcribe_chunk_segments(audio_chunk, chunk_duration):
+                            segment = dict(segment)
+                            segment["start"] = float(segment.get("start", 0)) + offset
+                            segment["end"] = float(segment.get("end", 0)) + offset
+                            adjusted.append(segment)
+                        chunk_text = segments_to_srt(adjusted)
+                        atomic_write(checkpoint, chunk_text)
+                        chunk_cues = parse_srt(checkpoint)
+                        chunk_errors = transcript_quality_errors(chunk_cues)
+                        if chunk_errors:
+                            raise RuntimeError(
+                                f"chunk {number + 1}/{chunk_count} failed quality validation: "
+                                + "; ".join(chunk_errors)
+                            )
+                    finally:
+                        audio_chunk.unlink(missing_ok=True)
                 for cue in chunk_cues:
                     blocks.append(f"{cue_number}\n{cue.timing}\n{cue.text}")
                     cue_number += 1
-                offset += chunk_duration
-                audio_chunk.unlink()
-                log(f"Transcription progress {video.name}: chunk {number + 1}/{len(chunks)}")
+                log(f"Transcription progress {video.name}: chunk {number + 1}/{chunk_count}")
             rendered = "\n\n".join(blocks) + ("\n" if blocks else "")
         finally:
             shutil.rmtree(audio_dir, ignore_errors=True)
+            if decode_warnings:
+                stream_probe = subprocess.run(
+                    [
+                        "ffprobe", "-v", "error", "-select_streams", "a",
+                        "-show_entries", "stream=index,codec_name", "-of", "json", str(video),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    errors="replace",
+                )
+                try:
+                    audio_streams = json.loads(stream_probe.stdout).get("streams", [])
+                except json.JSONDecodeError:
+                    audio_streams = []
+                decode_warnings.insert(
+                    0,
+                    "audio streams: " + json.dumps(audio_streams, ensure_ascii=False, sort_keys=True),
+                )
+                atomic_write(warning_report, "\n\n".join(decode_warnings) + "\n")
+                log(f"WARN source decode issues recorded: {warning_report}")
     if not rendered.strip():
         raise RuntimeError(f"Whisper produced no subtitle cues for {video.name}")
     output.parent.mkdir(parents=True, exist_ok=True)

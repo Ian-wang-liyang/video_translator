@@ -1,11 +1,13 @@
 import importlib.util
 import json
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from subtitle_pipeline import backends, cli
+from subtitle_pipeline import backends, cli, specialist_worker
 from subtitle_pipeline.cli import (
     ActiveRunnerError,
     approve_sample,
@@ -47,6 +49,85 @@ def test_explicit_cpu_configuration(tmp_path: Path):
     assert settings.device == "cpu"
     assert settings.transcription_backend == "faster-whisper"
     assert len(settings_fingerprint(settings)) == 64
+
+
+def test_faster_whisper_rescue_disables_speech_rejection_and_isolates_specialist(
+    tmp_path: Path, monkeypatch
+):
+    (tmp_path / "config.toml").write_text(
+        '[backend]\ntranscription="faster-whisper"\ntranslation="llama-cpp"\ndevice="cpu"\n',
+        encoding="utf-8",
+    )
+    settings = load_settings(tmp_path)
+    created: list[tuple[str, str, str]] = []
+    calls: list[dict] = []
+
+    class FakeWhisperModel:
+        def __init__(self, path: str, *, device: str, compute_type: str):
+            created.append((path, device, compute_type))
+
+        def transcribe(self, audio: str, **kwargs):
+            calls.append(kwargs)
+            return iter(()), object()
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=FakeWhisperModel))
+    transcriber = backends.FasterWhisperTranscriber(settings)
+
+    transcriber.transcribe("audio.wav", clip_timestamps="10,20", rescue=True)
+    worker_calls: list[tuple[list[str], dict]] = []
+
+    def fake_run(command, **kwargs):
+        worker_calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout="[[]]", stderr="")
+
+    monkeypatch.setattr(backends.subprocess, "run", fake_run)
+    assert transcriber.transcribe_specialist_batch("audio.wav", ["10,20"]) == [[]]
+
+    assert calls[0]["vad_filter"] is False
+    assert calls[0]["no_speech_threshold"] is None
+    assert calls[0]["log_prob_threshold"] is None
+    assert calls[0]["word_timestamps"] is True
+    assert len(created) == 1
+    assert worker_calls[0][0][1:3] == ["-m", "subtitle_pipeline.specialist_worker"]
+    assert worker_calls[0][1]["env"]["PYTHONIOENCODING"] == "utf-8"
+
+
+def test_window_overlap_must_be_smaller_than_decode_window(tmp_path: Path):
+    (tmp_path / "config.toml").write_text(
+        "[processing]\ndecode_window_seconds=30\nwindow_overlap_seconds=30\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="window_overlap_seconds"):
+        load_settings(tmp_path)
+
+
+def test_specialist_worker_preserves_safe_windows_decode_settings(monkeypatch, capsys):
+    calls: list[dict] = []
+
+    @dataclass
+    class Segment:
+        start: float
+        end: float
+        text: str
+        avg_logprob: float
+
+    class FakeWhisperModel:
+        def __init__(self, path: str, *, device: str, compute_type: str):
+            assert device == "cpu"
+            assert compute_type == "float32"
+
+        def transcribe(self, audio: str, **kwargs):
+            calls.append(kwargs)
+            return iter([Segment(0, 1, "止まって", -0.2)]), object()
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=FakeWhisperModel))
+
+    assert specialist_worker.main(["model", "audio.wav", '["0,1"]']) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload[0][0]["text"] == "止まって"
+    assert calls[0]["word_timestamps"] is False
+    assert calls[0]["no_speech_threshold"] is None
 
 
 def test_pipeline_revisions_invalidate_approval_fingerprint(tmp_path: Path, monkeypatch):

@@ -72,11 +72,26 @@ Blank Whisper decode windows do not interrupt repetition-burst detection; exact
 loops spanning those blanks are filtered before subtitle validation. Detection
 also runs after final cue whitespace normalization so formatting differences
 cannot conceal a loop.
-Faster-whisper runs every five-minute PCM chunk as independent 30-second decode
-windows. Strict VAD and a configurable PCM dBFS gate omit low-level/background
-speech before cues are combined. Empty outputs still fail validation. The
-quality-first Windows/Linux defaults use full Whisper `large-v3` and Qwen3 8B
-Q4_K_M; translation batches include neighboring dialogue as context.
+Faster-whisper runs every five-minute PCM chunk in overlapping 30-second decode
+windows, then assigns each result a non-overlapping ownership region. A
+configurable PCM dBFS gate omits low-level/background speech. The pipeline maps
+loud audio that lacks subtitle coverage and retries those gaps, plus
+low-confidence cues, without Whisper's no-speech rejection. Recovery is checked
+against the CPU/float32 Japanese Kotoba specialist; detected clipping receives a
+temporary FFmpeg de-clipping pass. Explicit clip timestamps bypass
+faster-whisper's VAD, so foreground and recovery gates—not the configured VAD
+threshold—govern these windowed full-video calls. Empty outputs still fail
+validation.
+
+The quality-first Windows/Linux defaults use full Whisper `large-v3`, the
+official `kotoba-whisper-v2.0-faster` Japanese specialist, and Qwen3 8B Q4_K_M.
+Only the primary model uses the GPU during transcription; the specialist stays
+in its native float32 format on CPU to fit 6 GB-class GPUs. Translation batches
+for a chunk run together in one isolated worker because the two Windows
+CTranslate2 runtimes are not stable in the same process. Translation batches
+include neighboring dialogue as context. Source decode warnings and the
+discovered audio-stream list are retained under
+`.subtitle-tools/reports/decode-warnings/`.
 
 When a user explicitly authorizes bypassing the sample for a quality migration,
 process exactly one alternate inventory video and stop for full-video review:

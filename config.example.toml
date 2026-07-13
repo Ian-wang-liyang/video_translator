@@ -14,11 +14,16 @@ device = "auto"
 
 [processing]
 chunk_seconds = 300
-# Quality-first defaults: independent Whisper windows prevent long decoding
-# loops; stricter VAD and the PCM level gate omit low-level/background speech.
+# Quality-first defaults: overlapping independent windows prevent long decoding
+# loops and boundary loss. Foreground gating omits quiet/background speech while
+# confidence- and activity-driven rescue recovers missed emphatic speech.
 decode_window_seconds = 30
+window_overlap_seconds = 2
 vad_threshold = 0.65
 foreground_min_dbfs = -36.0
+rescue_activity_dbfs = -28.0
+rescue_flag_logprob = -0.85
+rescue_accept_logprob = -1.0
 translation_context_cues = 2
 translation_n_ctx = 4096
 # -1 offloads every layer. Reduce this if a small GPU cannot initialize Qwen.
@@ -27,4 +32,5 @@ translation_gpu_layers = -1
 [models]
 # Values are paths relative to <runtime>/models. Leave absent to use defaults.
 # whisper = "faster-whisper-large-v3"
+# specialist = "kotoba-whisper-v2.0-faster"
 # translation = "Qwen3-8B-Q4_K_M.gguf"

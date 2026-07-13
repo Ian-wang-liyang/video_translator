@@ -17,6 +17,11 @@
       "revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
       "directory": "faster-whisper-large-v3"
     },
+    "specialist": {
+      "repo": "kotoba-tech/kotoba-whisper-v2.0-faster",
+      "revision": "f44edd35eaeb2274e85ac7b31fb2c6f59ff1c4bc",
+      "directory": "kotoba-whisper-v2.0-faster"
+    },
     "translation": {
       "repo": "Qwen/Qwen3-8B-GGUF",
       "revision": "7c41481f57cb95916b40956ab2f0b139b296d974",
@@ -29,6 +34,11 @@
       "repo": "Systran/faster-whisper-large-v3",
       "revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
       "directory": "faster-whisper-large-v3"
+    },
+    "specialist": {
+      "repo": "kotoba-tech/kotoba-whisper-v2.0-faster",
+      "revision": "f44edd35eaeb2274e85ac7b31fb2c6f59ff1c4bc",
+      "directory": "kotoba-whisper-v2.0-faster"
     },
     "translation": {
       "repo": "Qwen/Qwen3-8B-GGUF",

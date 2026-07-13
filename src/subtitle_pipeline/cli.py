@@ -36,9 +36,13 @@ def settings_fingerprint(settings: Settings) -> str:
     material = "|".join(
         [settings.transcription_backend, settings.translation_backend, settings.device,
          str(settings.chunk_seconds), str(settings.decode_window_seconds),
+         str(settings.window_overlap_seconds),
          str(settings.vad_threshold), str(settings.foreground_min_dbfs),
+         str(settings.rescue_activity_dbfs), str(settings.rescue_flag_logprob),
+         str(settings.rescue_accept_logprob),
          str(settings.translation_context_cues), str(settings.translation_n_ctx),
          str(settings.translation_gpu_layers), str(settings.whisper_model),
+         str(settings.specialist_model),
          str(settings.translation_model),
          core.TRANSCRIPTION_REVISION, core.TRANSLATION_REVISION, core.TRANSLATION_PROMPT_REVISION]
     )
@@ -283,6 +287,11 @@ def doctor(settings: Settings) -> dict:
         checks[command] = {"ok": bool(path), "path": path}
     checks["videos_directory"] = {"ok": settings.video_dir.is_dir(), "path": str(settings.video_dir)}
     checks["whisper_model"] = {"ok": settings.whisper_model.exists(), "path": str(settings.whisper_model)}
+    if settings.specialist_model is not None:
+        checks["specialist_model"] = {
+            "ok": settings.specialist_model.exists(),
+            "path": str(settings.specialist_model),
+        }
     checks["translation_model"] = {"ok": settings.translation_model.exists(), "path": str(settings.translation_model)}
     transcription_module = "mlx_whisper" if settings.transcription_backend == "mlx" else "faster_whisper"
     translation_module = "mlx_lm" if settings.translation_backend == "mlx" else "llama_cpp"
@@ -523,6 +532,9 @@ def main(argv: list[str] | None = None) -> int:
                 "runtime_dir": str(settings.runtime_dir),
                 "video_dir": str(settings.video_dir),
                 "whisper_model": str(settings.whisper_model),
+                "specialist_model": (
+                    str(settings.specialist_model) if settings.specialist_model is not None else None
+                ),
                 "translation_model": str(settings.translation_model),
             }
             emit(effective, args.json)

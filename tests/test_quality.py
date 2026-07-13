@@ -64,7 +64,14 @@ def test_chunk_transcription_uses_independent_short_windows(tmp_path: Path, monk
         def __init__(self):
             self.clips = []
 
-        def transcribe(self, audio: str, *, clip_timestamps: str = "0") -> dict:
+        def transcribe(
+            self,
+            audio: str,
+            *,
+            clip_timestamps: str = "0",
+            rescue: bool = False,
+            specialist: bool = False,
+        ) -> dict:
             self.clips.append(clip_timestamps)
             start = float(clip_timestamps.split(",")[0])
             return {
@@ -76,11 +83,64 @@ def test_chunk_transcription_uses_independent_short_windows(tmp_path: Path, monk
     transcriber = WindowedTranscriber()
     monkeypatch.setattr(core, "_TRANSCRIBER", transcriber)
     monkeypatch.setattr(core, "filter_foreground_segments", lambda path, segments: segments)
+    monkeypatch.setattr(core, "pcm_activity_intervals", lambda path, threshold: ([], 0.0))
+    monkeypatch.setattr(core, "rescue_intervals", lambda activity, segments, duration: [])
 
     segments = core.transcribe_chunk_segments(tmp_path / "chunk.wav", 65)
 
-    assert transcriber.clips == ["0,30", "30,60", "60,65"]
-    assert len(segments) == 3
+    assert transcriber.clips == ["0.0,30.0", "28.0,58.0", "56.0,65"]
+    assert len(segments) == 1
+
+
+def test_decode_window_ownership_has_overlap_without_gaps():
+    assert core.decode_windows(65) == [
+        (0.0, 30.0, 0.0, 29.0),
+        (28.0, 58.0, 29.0, 57.0),
+        (56.0, 65, 57.0, 65),
+    ]
+
+
+def test_pcm_activity_finds_loud_interval_and_clipping(tmp_path: Path):
+    audio = tmp_path / "activity.wav"
+    samples = array("h", [100] * 8_000 + [32767] * 8_000)
+    with wave.open(str(audio), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16_000)
+        handle.writeframes(samples.tobytes())
+
+    intervals, clipping_ratio = core.pcm_activity_intervals(audio, -28)
+
+    assert intervals == [(0.5, 1.0)]
+    assert clipping_ratio == 0.5
+
+
+def test_rescue_requires_agreement_or_strong_single_model():
+    primary = [{"start": 1, "end": 2, "text": "早く来て", "avg_logprob": -0.7}]
+    specialist = [{"start": 1, "end": 2, "text": "早く来て", "avg_logprob": -0.8}]
+    assert core.choose_rescue(primary, specialist) == primary
+
+    disagreement = [{"start": 1, "end": 2, "text": "全然違う", "avg_logprob": -0.2}]
+    assert core.choose_rescue(primary, disagreement) == []
+
+    strong = [{"start": 1, "end": 2, "text": "止まって", "avg_logprob": -0.4}]
+    assert core.choose_rescue(strong, []) == strong
+
+    stock = [{"start": 1, "end": 2, "text": "ありがとうございました", "avg_logprob": -0.1}]
+    assert core.choose_rescue(stock, stock) == []
+
+
+def test_merge_rescue_adds_uncovered_segment_and_replaces_weak_text():
+    primary = [{"start": 1, "end": 2, "text": "違う", "avg_logprob": -1.2}]
+    rescue = [
+        {"start": 1, "end": 2, "text": "待って", "avg_logprob": -0.5},
+        {"start": 4, "end": 5, "text": "早く", "avg_logprob": -0.6},
+    ]
+
+    assert [segment["text"] for segment in core.merge_rescue_segments(primary, rescue)] == [
+        "待って",
+        "早く",
+    ]
 
 
 def test_foreground_filter_omits_low_level_speech(tmp_path: Path):
@@ -107,7 +167,14 @@ def test_adjacent_duplicate_threshold_applies_to_short_chunks():
 
 
 class FakeTranscriber:
-    def transcribe(self, audio: str, *, clip_timestamps: str = "0") -> dict:
+    def transcribe(
+        self,
+        audio: str,
+        *,
+        clip_timestamps: str = "0",
+        rescue: bool = False,
+        specialist: bool = False,
+    ) -> dict:
         return {"segments": [{"start": 0, "end": 1, "text": "新しい字幕"}]}
 
 
@@ -131,6 +198,12 @@ def test_sample_transcription_does_not_replace_full_output_provenance(tmp_path: 
     state = tmp_path / "state"
     monkeypatch.setattr(core, "STATE_DIR", state)
     monkeypatch.setattr(core, "_TRANSCRIBER", FakeTranscriber())
+    monkeypatch.setattr(core, "decode_pcm_clip", lambda source, destination, start, duration: (300, ""))
+    monkeypatch.setattr(
+        core,
+        "transcribe_chunk_segments",
+        lambda audio, duration: [{"start": 0, "end": 1, "text": "新しい字幕"}],
+    )
 
     full_metadata = core.provenance_path("transcription", full_output)
     core.atomic_write(full_metadata, json.dumps({"fingerprint": "old-full"}))

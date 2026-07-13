@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -33,7 +35,15 @@ def configure_windows_cuda_dlls() -> None:
 
 
 class Transcriber(Protocol):
-    def transcribe(self, audio: str, *, clip_timestamps: str = "0") -> dict: ...
+    def transcribe(
+        self,
+        audio: str,
+        *,
+        clip_timestamps: str = "0",
+        rescue: bool = False,
+    ) -> dict: ...
+
+    def transcribe_specialist_batch(self, audio: str, clips: list[str]) -> list[list[dict]]: ...
 
 
 class Translator(Protocol):
@@ -46,7 +56,13 @@ class MLXTranscriber:
         self.module = mlx_whisper
         self.model = str(settings.whisper_model)
 
-    def transcribe(self, audio: str, *, clip_timestamps: str = "0") -> dict:
+    def transcribe(
+        self,
+        audio: str,
+        *,
+        clip_timestamps: str = "0",
+        rescue: bool = False,
+    ) -> dict:
         return self.module.transcribe(
             audio,
             path_or_hf_repo=self.model,
@@ -54,10 +70,14 @@ class MLXTranscriber:
             task="transcribe",
             temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
             condition_on_previous_text=False,
-            word_timestamps=False,
+            word_timestamps=True,
+            no_speech_threshold=None if rescue else 0.6,
             clip_timestamps=clip_timestamps,
             verbose=None,
         )
+
+    def transcribe_specialist_batch(self, audio: str, clips: list[str]) -> list[list[dict]]:
+        return [[] for _ in clips]
 
 
 class FasterWhisperTranscriber:
@@ -70,7 +90,13 @@ class FasterWhisperTranscriber:
         compute_type = "float16" if device == "cuda" else "int8"
         self.model = WhisperModel(str(settings.whisper_model), device=device, compute_type=compute_type)
 
-    def transcribe(self, audio: str, *, clip_timestamps: str = "0") -> dict:
+    def transcribe(
+        self,
+        audio: str,
+        *,
+        clip_timestamps: str = "0",
+        rescue: bool = False,
+    ) -> dict:
         options = {}
         if clip_timestamps != "0":
             options["clip_timestamps"] = clip_timestamps
@@ -79,7 +105,9 @@ class FasterWhisperTranscriber:
             language="ja",
             task="transcribe",
             beam_size=5,
-            vad_filter=True,
+            # faster-whisper bypasses VAD whenever explicit clip timestamps are
+            # supplied. Be explicit so configuration and runtime behavior agree.
+            vad_filter=clip_timestamps == "0" and not rescue,
             vad_parameters={
                 "threshold": self.settings.vad_threshold,
                 "min_speech_duration_ms": 250,
@@ -87,10 +115,48 @@ class FasterWhisperTranscriber:
                 "speech_pad_ms": 200,
             },
             condition_on_previous_text=False,
-            temperature=(0.0, 0.2, 0.4, 0.6),
+            temperature=(0.0, 0.2, 0.4, 0.6, 0.8),
+            no_speech_threshold=None if rescue else 0.6,
+            log_prob_threshold=None if rescue else -1.0,
+            word_timestamps=True,
             **options,
         )
         return {"segments": [asdict(segment) for segment in segments]}
+
+    def transcribe_specialist_batch(self, audio: str, clips: list[str]) -> list[list[dict]]:
+        if not clips:
+            return []
+        if self.settings.specialist_model is None:
+            return [[] for _ in clips]
+        environment = os.environ.copy()
+        environment["PYTHONIOENCODING"] = "utf-8"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "subtitle_pipeline.specialist_worker",
+                str(self.settings.specialist_model),
+                audio,
+                json.dumps(clips),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=environment,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Japanese specialist worker failed with exit code {result.returncode}: "
+                f"{result.stderr.strip() or 'no diagnostic output'}"
+            )
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Japanese specialist worker returned invalid JSON") from exc
+        if not isinstance(payload, list) or len(payload) != len(clips):
+            raise RuntimeError("Japanese specialist worker returned the wrong result count")
+        return payload
 
 
 class MLXTranslator:

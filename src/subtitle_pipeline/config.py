@@ -19,12 +19,17 @@ class Settings:
     device: str
     chunk_seconds: int
     decode_window_seconds: int
+    window_overlap_seconds: int
     vad_threshold: float
     foreground_min_dbfs: float
+    rescue_activity_dbfs: float
+    rescue_flag_logprob: float
+    rescue_accept_logprob: float
     translation_context_cues: int
     translation_n_ctx: int
     translation_gpu_layers: int
     whisper_model: Path
+    specialist_model: Path | None
     translation_model: Path
 
 
@@ -72,12 +77,23 @@ def load_settings(root: Path | None = None) -> Settings:
     )
     model_root = runtime / "models"
     whisper_model = _confined_path(model_root, models.get("whisper", whisper_name), "whisper model")
+    specialist_model = None
+    if transcription == "faster-whisper":
+        specialist_model = _confined_path(
+            model_root,
+            models.get("specialist", "kotoba-whisper-v2.0-faster"),
+            "specialist model",
+        )
     translation_model = _confined_path(model_root, models.get("translation", translation_name), "translation model")
     processing = data.get("processing", {})
     chunk_seconds = int(processing.get("chunk_seconds", 300))
     decode_window_seconds = int(processing.get("decode_window_seconds", 30))
+    window_overlap_seconds = int(processing.get("window_overlap_seconds", 2))
     vad_threshold = float(processing.get("vad_threshold", 0.65))
     foreground_min_dbfs = float(processing.get("foreground_min_dbfs", -36.0))
+    rescue_activity_dbfs = float(processing.get("rescue_activity_dbfs", -28.0))
+    rescue_flag_logprob = float(processing.get("rescue_flag_logprob", -0.85))
+    rescue_accept_logprob = float(processing.get("rescue_accept_logprob", -1.0))
     translation_context_cues = int(processing.get("translation_context_cues", 2))
     translation_n_ctx = int(processing.get("translation_n_ctx", 4096))
     translation_gpu_layers = int(processing.get("translation_gpu_layers", -1))
@@ -85,10 +101,18 @@ def load_settings(root: Path | None = None) -> Settings:
         raise ValueError("processing.chunk_seconds must be positive")
     if decode_window_seconds <= 0 or decode_window_seconds > chunk_seconds:
         raise ValueError("processing.decode_window_seconds must be positive and no larger than chunk_seconds")
+    if window_overlap_seconds < 0 or window_overlap_seconds >= decode_window_seconds:
+        raise ValueError(
+            "processing.window_overlap_seconds must be non-negative and smaller than decode_window_seconds"
+        )
     if not 0 < vad_threshold < 1:
         raise ValueError("processing.vad_threshold must be between zero and one")
     if foreground_min_dbfs > 0:
         raise ValueError("processing.foreground_min_dbfs must be zero or negative")
+    if not foreground_min_dbfs <= rescue_activity_dbfs <= 0:
+        raise ValueError("processing.rescue_activity_dbfs must be between foreground_min_dbfs and zero")
+    if rescue_accept_logprob > 0 or rescue_flag_logprob > 0:
+        raise ValueError("processing rescue log-probability thresholds must be zero or negative")
     if translation_context_cues < 0:
         raise ValueError("processing.translation_context_cues cannot be negative")
     if translation_n_ctx <= 0:
@@ -104,12 +128,17 @@ def load_settings(root: Path | None = None) -> Settings:
         device=device,
         chunk_seconds=chunk_seconds,
         decode_window_seconds=decode_window_seconds,
+        window_overlap_seconds=window_overlap_seconds,
         vad_threshold=vad_threshold,
         foreground_min_dbfs=foreground_min_dbfs,
+        rescue_activity_dbfs=rescue_activity_dbfs,
+        rescue_flag_logprob=rescue_flag_logprob,
+        rescue_accept_logprob=rescue_accept_logprob,
         translation_context_cues=translation_context_cues,
         translation_n_ctx=translation_n_ctx,
         translation_gpu_layers=translation_gpu_layers,
         whisper_model=whisper_model,
+        specialist_model=specialist_model,
         translation_model=translation_model,
     )
 

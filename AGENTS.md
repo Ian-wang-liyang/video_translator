@@ -80,7 +80,23 @@ Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
 - Decode long media sequentially into temporary five-minute mono PCM chunks.
   Validate and checkpoint each chunk, then delete temporary audio.
 - Use temperature fallback and `condition_on_previous_text=False` for MLX
-  Whisper. Use faster-whisper with VAD on Linux/WSL and Windows.
+  Whisper. On Linux/WSL and Windows, faster-whisper uses VAD only when no
+  explicit clip is supplied; explicit overlapping windows use PCM foreground
+  gating because faster-whisper bypasses VAD for clip timestamps.
+- Overlap adjacent short decode windows and assign a non-overlapping ownership
+  region to each result so speech crossing a window boundary is decoded twice
+  but emitted once.
+- Build a loud-audio coverage map after the primary decode. Retry uncovered
+  high-energy intervals and low-confidence cues without Whisper's no-speech
+  rejection. Accept recovery only after confidence/text checks and agreement
+  with the CPU/float32 Japanese specialist, except for independently strong output.
+  Run all specialist intervals for a chunk in one isolated worker process; the
+  Windows CTranslate2 runtimes for the GPU primary and CPU specialist must not
+  coexist in one process. Do not request specialist word timestamps: the pinned
+  official conversion access-violates on Windows when that feature is enabled.
+- Apply FFmpeg de-clipping only to temporary rescue PCM when clipped samples are
+  detected. Record corrupt-source decode warnings and available audio streams
+  under runtime reports; never filter or rewrite the source video.
 - Reject empty, malformed, stale, misaligned, untranslated, internally
   repetitive, cross-cue repetitive, or implausibly long outputs.
 - Ignore empty Whisper decode windows when detecting consecutive repetition

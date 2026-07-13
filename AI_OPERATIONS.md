@@ -61,9 +61,17 @@ SRT, move it into `.subtitle-tools/quarantine/`. For decode failures, inspect
 with FFprobe and test a short sequential FFmpeg decode. For repetition or
 hallucination, stop translation, identify the earliest bad chunk, adjust the
 quality gate, and rerun the sample.
-Faster-whisper always decodes the unchanged five-minute PCM chunks in independent
-30-second windows, then removes segments below the configured foreground dBFS
-threshold before normal quality validation.
+Faster-whisper decodes each unchanged five-minute PCM chunk through overlapping
+30-second windows with non-overlapping ownership regions, then removes segments
+below the configured foreground dBFS threshold. Because faster-whisper bypasses
+VAD for explicit clip timestamps, full-video windowed decoding does not claim to
+use VAD. Loud uncovered intervals and low-confidence cues receive a no-speech-
+disabled retry and a CPU/float32 Japanese specialist check. Run the specialist
+once per chunk in its isolated worker; do not load it into the GPU primary's
+process or request specialist word timestamps on Windows. Clipped rescue regions
+may use temporary de-clipped PCM; primary audio and source videos remain unchanged. Inspect
+`.subtitle-tools/reports/decode-warnings/` when FFmpeg reports corrupt source
+packets or when an alternate audio stream may exist.
 An explicitly user-authorized sample bypass must name one inventory video and
 use `process --video PATH --skip-sample-gate`; it must stop for full-video review.
 On Windows, the runner lock also holds a system-sleep inhibition request for the
