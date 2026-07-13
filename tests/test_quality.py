@@ -67,6 +67,7 @@ def test_translation_rebuilds_when_source_text_changes(tmp_path: Path, monkeypat
     destination = tmp_path / "video.zh-Hans.srt"
     state = tmp_path / "state"
     monkeypatch.setattr(core, "STATE_DIR", state)
+    monkeypatch.setattr(core, "TOOLS", tmp_path)
     translator = FakeTranslator()
 
     write_srt(source, "古い字幕")
@@ -79,3 +80,18 @@ def test_translation_rebuilds_when_source_text_changes(tmp_path: Path, monkeypat
 
     assert core.parse_srt(destination)[0].text == "新字幕"
     assert json.loads(metadata.read_text())["fingerprint"] == core.translation_fingerprint(source)
+    quarantined = list((tmp_path / "quarantine").rglob("video.zh-Hans.srt"))
+    assert len(quarantined) == 1
+    assert core.parse_srt(quarantined[0])[0].text == "旧字幕"
+
+
+def test_quarantine_preserves_rejected_output(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(core, "TOOLS", tmp_path)
+    output = tmp_path / "video.ja.srt"
+    write_srt(output, "古い字幕")
+
+    destination = core.quarantine_output(output, "invalid transcription")
+
+    assert destination is not None
+    assert not output.exists()
+    assert destination.read_text(encoding="utf-8").endswith("古い字幕\n")

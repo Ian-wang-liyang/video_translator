@@ -59,6 +59,11 @@ Bootstrap a fresh clone with `python scripts/bootstrap.py --backend auto
   replacement.
 - A bilingual cue places Simplified Chinese above Japanese and is generated only
   from exactly aligned monolingual SRTs.
+- Bind sample and first-video approvals to hashes of the reviewed artifacts;
+  invalidate approval whenever those artifacts change. Require current full
+  validation immediately before bilingual generation.
+- Keep configured video and runtime paths inside the repository and model paths
+  inside the runtime model directory.
 
 ## Change and execution discipline
 

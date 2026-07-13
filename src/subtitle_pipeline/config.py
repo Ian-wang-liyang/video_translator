@@ -40,8 +40,8 @@ def load_settings(root: Path | None = None) -> Settings:
     local = root / "config.toml"
     if local.exists():
         data = tomllib.loads(local.read_text(encoding="utf-8"))
-    runtime = root / data.get("paths", {}).get("runtime", ".subtitle-tools")
-    videos = root / data.get("paths", {}).get("videos", "videos")
+    runtime = _confined_path(root, data.get("paths", {}).get("runtime", ".subtitle-tools"), "runtime")
+    videos = _confined_path(root, data.get("paths", {}).get("videos", "videos"), "videos")
     backend = data.get("backend", {})
     system = platform.system()
     machine = platform.machine().lower()
@@ -64,6 +64,12 @@ def load_settings(root: Path | None = None) -> Settings:
         "qwen3-4b-instruct-4bit" if translation == "mlx"
         else "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
     )
+    model_root = runtime / "models"
+    whisper_model = _confined_path(model_root, models.get("whisper", whisper_name), "whisper model")
+    translation_model = _confined_path(model_root, models.get("translation", translation_name), "translation model")
+    chunk_seconds = int(data.get("processing", {}).get("chunk_seconds", 300))
+    if chunk_seconds <= 0:
+        raise ValueError("processing.chunk_seconds must be positive")
     return Settings(
         root=root,
         runtime_dir=runtime,
@@ -71,7 +77,16 @@ def load_settings(root: Path | None = None) -> Settings:
         transcription_backend=transcription,
         translation_backend=translation,
         device=device,
-        chunk_seconds=int(data.get("processing", {}).get("chunk_seconds", 300)),
-        whisper_model=runtime / "models" / models.get("whisper", whisper_name),
-        translation_model=runtime / "models" / models.get("translation", translation_name),
+        chunk_seconds=chunk_seconds,
+        whisper_model=whisper_model,
+        translation_model=translation_model,
     )
+
+
+def _confined_path(parent: Path, configured: str, label: str) -> Path:
+    candidate = (parent / configured).resolve()
+    try:
+        candidate.relative_to(parent.resolve())
+    except ValueError as exc:
+        raise ValueError(f"configured {label} path must remain inside {parent}") from exc
+    return candidate

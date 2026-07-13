@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from subtitle_pipeline import cli
-from subtitle_pipeline.cli import ActiveRunnerError, run_lock, settings_fingerprint, status
+from subtitle_pipeline.cli import ActiveRunnerError, approve_sample, run_lock, settings_fingerprint, status
 from subtitle_pipeline.config import load_settings
 
 
@@ -72,3 +72,23 @@ def test_empty_project_requests_videos(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("subtitle_pipeline.cli.doctor", lambda _: {"ok": True})
     monkeypatch.setattr("subtitle_pipeline.cli.core.videos", lambda: [])
     assert status(settings)["next_action"] == "add_videos"
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        '[paths]\nruntime="../elsewhere"\n',
+        '[paths]\nvideos="/tmp/videos"\n',
+        '[models]\nwhisper="../../outside-model"\n',
+    ],
+)
+def test_configured_paths_cannot_escape_their_private_roots(tmp_path: Path, config: str):
+    (tmp_path / "config.toml").write_text(config, encoding="utf-8")
+    with pytest.raises(ValueError, match="must remain inside"):
+        load_settings(tmp_path)
+
+
+def test_sample_approval_requires_a_completed_current_review(tmp_path: Path):
+    settings = load_settings(tmp_path)
+    with pytest.raises(Exception, match="no completed sample"):
+        approve_sample(settings, "reviewed")

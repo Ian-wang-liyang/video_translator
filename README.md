@@ -84,3 +84,10 @@ titles are checkpointed in `.subtitle-tools/reports/title-mapping.csv`, and
 
 Original videos are never rewritten. Generated files and all runtime data are
 ignored by Git.
+
+Configured video and runtime paths must remain inside the repository, and model
+paths must remain inside the runtime model directory. Rejected or stale subtitle
+outputs are preserved under `.subtitle-tools/quarantine/` before replacement.
+Sample and first-video approvals are bound to the exact reviewed artifacts;
+changing those files invalidates approval. `bilingual` always reruns full
+validation before writing combined subtitles.

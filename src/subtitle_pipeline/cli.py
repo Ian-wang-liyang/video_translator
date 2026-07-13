@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import time
 from contextlib import contextmanager
@@ -35,6 +36,65 @@ def settings_fingerprint(settings: Settings) -> str:
         [settings.transcription_backend, settings.translation_backend, settings.device,
          str(settings.chunk_seconds), str(settings.whisper_model), str(settings.translation_model),
          core.TRANSCRIPTION_REVISION, core.TRANSLATION_REVISION, core.TRANSLATION_PROMPT_REVISION]
+    )
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
+def file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def review_fingerprint(settings: Settings, review: dict) -> str:
+    material = json.dumps(review, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256((settings_fingerprint(settings) + "|" + material).encode()).hexdigest()
+
+
+def sample_review_is_current(settings: Settings, review: dict) -> bool:
+    try:
+        japanese = settings.runtime_dir / "sample" / review["japanese_file"]
+        chinese = settings.runtime_dir / "sample" / review["chinese_file"]
+        return (
+            review["fingerprint"] == settings_fingerprint(settings)
+            and review["status"] == "awaiting_review"
+            and file_digest(japanese) == review["japanese_sha256"]
+            and file_digest(chinese) == review["chinese_sha256"]
+        )
+    except (KeyError, OSError):
+        return False
+
+
+def video_gate_fingerprint(settings: Settings, video: Path) -> str:
+    japanese = video.with_suffix(".ja.srt")
+    chinese = video.with_suffix(".zh-Hans.srt")
+    source_cues = core.parse_srt(japanese)
+    translated_cues = core.parse_srt(chinese)
+    errors = core.transcript_quality_errors(source_cues)
+    aligned = len(source_cues) == len(translated_cues) and all(
+        source.index == translated.index
+        and source.timing == translated.timing
+        and bool(translated.text.strip())
+        and not re.search(r"[\u3040-\u30ff]", translated.text)
+        for source, translated in zip(source_cues, translated_cues, strict=True)
+    )
+    transcription_metadata = core.provenance_path("transcription", japanese)
+    translation_metadata = core.provenance_path("translation", chinese)
+    try:
+        recorded_transcription = json.loads(transcription_metadata.read_text())["fingerprint"]
+        transcription_current = recorded_transcription == core.transcription_fingerprint(video, japanese, "0")
+        recorded_translation = json.loads(translation_metadata.read_text())["fingerprint"]
+        translation_current = recorded_translation == core.translation_fingerprint(japanese)
+    except Exception:
+        transcription_current = translation_current = False
+    if errors or not aligned or not transcription_current or not translation_current:
+        raise ConfigurationError(
+            "first-video outputs are not aligned, quality-valid, and current; rerun process before approval"
+        )
+    if not core.existing_title_mapping().get(video.name):
+        raise ConfigurationError("the first video has no completed title checkpoint; rerun process before approval")
+    stat = video.stat()
+    material = "|".join(
+        [settings_fingerprint(settings), video.name, str(stat.st_size), str(stat.st_mtime_ns),
+         file_digest(japanese), file_digest(chinese)]
     )
     return hashlib.sha256(material.encode()).hexdigest()
 
@@ -157,14 +217,26 @@ def status(settings: Settings) -> dict:
     approved = False
     if approval.exists():
         try:
-            approved = json.loads(approval.read_text())["fingerprint"] == settings_fingerprint(settings)
+            approval_data = json.loads(approval.read_text())
+            review_data = json.loads((settings.runtime_dir / "state" / "sample-review.json").read_text())
+            approved = (
+                sample_review_is_current(settings, review_data)
+                and approval_data["fingerprint"] == settings_fingerprint(settings)
+                and approval_data["review_fingerprint"] == review_fingerprint(settings, review_data)
+            )
         except Exception:
             pass
     gate = settings.runtime_dir / "state" / "video-gate-approved.json"
     gate_approved = False
     if gate.exists():
         try:
-            gate_approved = json.loads(gate.read_text())["fingerprint"] == settings_fingerprint(settings)
+            gate_data = json.loads(gate.read_text())
+            first = core.videos()[0] if core.videos() else None
+            gate_approved = bool(
+                first
+                and gate_data["settings_fingerprint"] == settings_fingerprint(settings)
+                and gate_data["artifact_fingerprint"] == video_gate_fingerprint(settings, first)
+            )
         except Exception:
             pass
     if not doctor(settings)["ok"]:
@@ -205,17 +277,34 @@ def status(settings: Settings) -> dict:
     return data
 
 
-def write_sample_review(settings: Settings) -> None:
+def write_sample_review(settings: Settings, video: Path, japanese: Path, chinese: Path) -> None:
     path = settings.runtime_dir / "state" / "sample-review.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    core.atomic_write(path, json.dumps({"fingerprint": settings_fingerprint(settings), "status": "awaiting_review",
-                                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}, indent=2) + "\n")
+    payload = {
+        "fingerprint": settings_fingerprint(settings),
+        "status": "awaiting_review",
+        "video": video.name,
+        "japanese_file": japanese.name,
+        "chinese_file": chinese.name,
+        "japanese_sha256": file_digest(japanese),
+        "chinese_sha256": file_digest(chinese),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    core.atomic_write(path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
 
 
 def approve_sample(settings: Settings, note: str) -> None:
+    review_path = settings.runtime_dir / "state" / "sample-review.json"
+    try:
+        review = json.loads(review_path.read_text())
+    except Exception as exc:
+        raise ConfigurationError("no completed sample is awaiting review") from exc
+    if not sample_review_is_current(settings, review):
+        raise ConfigurationError("the available sample artifacts do not match the current review")
     path = settings.runtime_dir / "state" / "sample-approved.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    core.atomic_write(path, json.dumps({"fingerprint": settings_fingerprint(settings), "note": note,
+    core.atomic_write(path, json.dumps({"fingerprint": settings_fingerprint(settings),
+                                        "review_fingerprint": review_fingerprint(settings, review), "note": note,
                                         "approved_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}, indent=2) + "\n")
 
 
@@ -290,8 +379,13 @@ def main(argv: list[str] | None = None) -> int:
                 chosen = args.video or (core.videos()[0] if core.videos() else None)
                 if chosen is None:
                     raise ConfigurationError("no videos found")
-                core.sample(chosen.resolve(), args.minutes * 60)
-                write_sample_review(settings)
+                chosen = chosen.resolve()
+                try:
+                    chosen.relative_to(settings.video_dir.resolve())
+                except ValueError as exc:
+                    raise ConfigurationError("sample video must be inside the configured videos directory") from exc
+                japanese, chinese = core.sample(chosen, args.minutes * 60)
+                write_sample_review(settings, chosen, japanese, chinese)
             emit({"ok": True, "next_action": "review_sample"}, args.json)
         elif args.command == "approve-sample":
             approve_sample(settings, args.note)
@@ -300,12 +394,14 @@ def main(argv: list[str] | None = None) -> int:
             first = core.videos()[0] if core.videos() else None
             if first is None or not first.with_suffix(".zh-Hans.srt").exists():
                 raise ConfigurationError("the first video has no completed Chinese subtitle to approve")
+            artifact_fingerprint = video_gate_fingerprint(settings, first)
             path = settings.runtime_dir / "state" / "video-gate-approved.json"
             core.atomic_write(
                 path,
                 json.dumps(
                     {
-                        "fingerprint": settings_fingerprint(settings),
+                        "settings_fingerprint": settings_fingerprint(settings),
+                        "artifact_fingerprint": artifact_fingerprint,
                         "video": first.name,
                         "note": args.note,
                         "approved_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -322,7 +418,13 @@ def main(argv: list[str] | None = None) -> int:
             gate_approved = False
             if gate_path.exists():
                 try:
-                    gate_approved = json.loads(gate_path.read_text())["fingerprint"] == settings_fingerprint(settings)
+                    gate_data = json.loads(gate_path.read_text())
+                    first = core.videos()[0] if core.videos() else None
+                    gate_approved = bool(
+                        first
+                        and gate_data["settings_fingerprint"] == settings_fingerprint(settings)
+                        and gate_data["artifact_fingerprint"] == video_gate_fingerprint(settings, first)
+                    )
                 except Exception:
                     pass
             with run_lock(settings):
@@ -336,6 +438,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValidationError(str(exc)) from exc
             emit({"ok": True, "next_action": "bilingual"}, args.json)
         elif args.command == "bilingual":
+            try:
+                core.validate()
+            except RuntimeError as exc:
+                message = "bilingual generation requires successful current validation: " + str(exc)
+                raise ValidationError(message) from exc
             report = bilingual.generate_bilingual()
             code = 1 if report["failures"] else 0
             next_action = "complete" if code == 0 else "resolve_failure"

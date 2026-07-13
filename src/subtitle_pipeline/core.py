@@ -83,6 +83,20 @@ def atomic_write(path: Path, text: str) -> None:
     temporary.replace(path)
 
 
+def quarantine_output(path: Path, reason: str) -> Path | None:
+    """Preserve a rejected generated output before replacing it."""
+    if not path.exists():
+        return None
+    safe_reason = re.sub(r"[^a-z0-9-]+", "-", reason.casefold()).strip("-") or "rejected"
+    stamp = time.strftime("%Y%m%dT%H%M%S") + f"-{time.time_ns() % 1_000_000_000:09d}"
+    destination_dir = TOOLS / "quarantine" / f"{stamp}-{safe_reason}"
+    destination_dir.mkdir(parents=True, exist_ok=False)
+    destination = destination_dir / path.name
+    path.replace(destination)
+    log(f"QUARANTINE {path.name}: {destination}")
+    return destination
+
+
 def provenance_path(stage: str, output: Path) -> Path:
     """Return an output-specific provenance record path."""
     output_key = hashlib.sha256(str(output.resolve()).encode()).hexdigest()
@@ -280,6 +294,7 @@ def transcribe_one(video: Path, output: Path, clip: str = "0") -> None:
         if not current:
             errors.append("missing or stale transcription fingerprint")
         log(f"REBUILD invalid transcription {output.name}: {'; '.join(errors)}")
+        quarantine_output(output, "invalid-transcription")
     global _TRANSCRIBER
     if _TRANSCRIBER is None:
         _TRANSCRIBER = load_transcriber(SETTINGS)
@@ -464,6 +479,7 @@ def translate_srt(model, tokenizer, source: Path, destination: Path) -> None:
             log(f"SKIP translation (complete aligned current output exists): {destination.name}")
             return
         log(f"REBUILD stale, incomplete, misaligned, or unproven translation: {destination.name}")
+        quarantine_output(destination, "invalid-translation")
     translated: list[Cue] = []
     log(f"START translation: {source.name}")
     for offset in range(0, len(source_cues), 10):
@@ -693,7 +709,7 @@ def validate() -> None:
         raise RuntimeError(f"Validation found {failures} failure(s)")
 
 
-def sample(video: Path, seconds: int) -> None:
+def sample(video: Path, seconds: int) -> tuple[Path, Path]:
     sample_dir = TOOLS / "sample"
     ja = sample_dir / f"{video.stem}.sample.ja.srt"
     zh = sample_dir / f"{video.stem}.sample.zh-Hans.srt"
@@ -705,3 +721,4 @@ def sample(video: Path, seconds: int) -> None:
         del model
         gc.collect()
     log(f"Sample ready: {zh}")
+    return ja, zh
