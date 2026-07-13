@@ -1,9 +1,35 @@
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import asdict
+from pathlib import Path
 from typing import Protocol
 
 from .config import Settings
+
+_DLL_DIRECTORY_HANDLES: list[object] = []
+
+
+def configure_windows_cuda_dlls() -> None:
+    """Expose pip-installed NVIDIA runtime DLLs to CTranslate2 on Windows."""
+    if os.name != "nt":
+        return
+    nvidia_root = Path(sys.prefix) / "Lib" / "site-packages" / "nvidia"
+    cublas_bin = nvidia_root / "cublas" / "bin"
+    runtime_bin = nvidia_root / "cuda_runtime" / "bin"
+    if not (cublas_bin / "cublas64_12.dll").is_file():
+        raise RuntimeError(
+            "CUDA transcription requires nvidia-cublas-cu12; rerun bootstrap to install the Windows CUDA runtime"
+        )
+    if not (runtime_bin / "cudart64_12.dll").is_file():
+        raise RuntimeError(
+            "CUDA inference requires nvidia-cuda-runtime-cu12; rerun bootstrap to install the Windows CUDA runtime"
+        )
+    dll_directories = sorted(path for path in nvidia_root.glob("*/bin") if path.is_dir())
+    for directory in dll_directories:
+        _DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(str(directory)))
+    os.environ["PATH"] = os.pathsep.join([*(str(path) for path in dll_directories), os.environ.get("PATH", "")])
 
 
 class Transcriber(Protocol):
@@ -36,6 +62,8 @@ class MLXTranscriber:
 
 class FasterWhisperTranscriber:
     def __init__(self, settings: Settings):
+        if settings.device == "cuda":
+            configure_windows_cuda_dlls()
         from faster_whisper import WhisperModel
         device = "cuda" if settings.device == "cuda" else "cpu"
         compute_type = "float16" if device == "cuda" else "int8"
@@ -77,6 +105,8 @@ class MLXTranslator:
 
 class LlamaCppTranslator:
     def __init__(self, settings: Settings):
+        if settings.device == "cuda":
+            configure_windows_cuda_dlls()
         from llama_cpp import Llama
         layers = -1 if settings.device == "cuda" else 0
         self.model = Llama(

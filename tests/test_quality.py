@@ -5,7 +5,13 @@ from pathlib import Path
 import pytest
 
 from subtitle_pipeline import core
-from subtitle_pipeline.core import Cue, cue_text_quality_error, filter_repetition_bursts, transcript_quality_errors
+from subtitle_pipeline.core import (
+    Cue,
+    cue_text_quality_error,
+    filter_repetition_bursts,
+    segments_to_srt,
+    transcript_quality_errors,
+)
 
 
 def test_filters_repetition_burst():
@@ -14,6 +20,33 @@ def test_filters_repetition_burst():
         for i, text in enumerate(["時間時間時間", "時間時間", "時間", "時間", "普通の会話"])
     ]
     assert [item["text"] for item in filter_repetition_bursts(segments)] == ["普通の会話"]
+
+
+def test_blank_segments_cannot_split_repetition_burst():
+    segments = [
+        {"start": 0, "end": 1, "text": "繰り返し"},
+        {"start": 1, "end": 2, "text": ""},
+        {"start": 2, "end": 3, "text": "繰り返し"},
+        {"start": 3, "end": 4, "text": "   "},
+        {"start": 4, "end": 5, "text": "繰り返し"},
+        {"start": 5, "end": 6, "text": "繰り返し"},
+        {"start": 6, "end": 7, "text": "通常の会話"},
+    ]
+
+    assert [item["text"] for item in filter_repetition_bursts(segments)] == ["通常の会話"]
+
+
+def test_final_whitespace_normalization_cannot_conceal_repetition_burst():
+    segments = [
+        {"start": index, "end": index + 1, "text": "同じ  台詞" if index % 2 else "同じ 台詞"}
+        for index in range(5)
+    ]
+    segments.append({"start": 5, "end": 6, "text": "次の台詞"})
+
+    rendered = segments_to_srt(segments)
+
+    assert "同じ 台詞" not in rendered
+    assert "次の台詞" in rendered
 
 
 def test_rejects_latin_garbage_in_japanese():
@@ -52,7 +85,6 @@ def test_sample_transcription_does_not_replace_full_output_provenance(tmp_path: 
     video.write_bytes(b"video")
     full_output = tmp_path / "video.ja.srt"
     sample_output = tmp_path / "sample" / "video.ja.srt"
-    sample_output.parent.mkdir()
     state = tmp_path / "state"
     monkeypatch.setattr(core, "STATE_DIR", state)
     monkeypatch.setattr(core, "_TRANSCRIBER", FakeTranscriber())
@@ -61,6 +93,7 @@ def test_sample_transcription_does_not_replace_full_output_provenance(tmp_path: 
     core.atomic_write(full_metadata, json.dumps({"fingerprint": "old-full"}))
     core.transcribe_one(video, sample_output, clip="0,300")
 
+    assert sample_output.is_file()
     assert json.loads(full_metadata.read_text())["fingerprint"] == "old-full"
     assert core.provenance_path("transcription", sample_output) != full_metadata
 

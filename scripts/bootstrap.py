@@ -27,7 +27,7 @@ def cuda_wheel_tag() -> str | None:
     if not nvidia:
         return None
     result = subprocess.run([nvidia], capture_output=True, text=True, check=False)
-    match = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", result.stdout)
+    match = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout)
     if not match:
         return None
     major, minor = map(int, match.groups())

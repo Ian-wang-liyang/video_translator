@@ -8,6 +8,13 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download, snapshot_download
 
 ROOT = Path(__file__).resolve().parents[1]
+COMPLETE_MARKER = ".subtitle-model-complete"
+
+
+def model_is_complete(destination: Path, spec: dict) -> bool:
+    if "filename" in spec:
+        return destination.is_file() and destination.stat().st_size > 0
+    return destination.is_dir() and (destination / COMPLETE_MARKER).is_file()
 
 
 def main() -> int:
@@ -20,7 +27,7 @@ def main() -> int:
     model_root.mkdir(parents=True, exist_ok=True)
     for spec in manifest.values():
         destination = model_root / spec["directory"]
-        if destination.exists() and any(destination.iterdir() if destination.is_dir() else [destination]):
+        if model_is_complete(destination, spec):
             print(f"Model already present: {destination}")
             continue
         if args.offline:
@@ -36,6 +43,7 @@ def main() -> int:
             shutil.copy2(downloaded, destination)
         else:
             snapshot_download(repo_id=spec["repo"], revision=spec["revision"], local_dir=destination)
+            (destination / COMPLETE_MARKER).write_text(f'{spec["repo"]}@{spec["revision"]}\n', encoding="utf-8")
         print(f"Downloaded: {destination}")
     return 0
 

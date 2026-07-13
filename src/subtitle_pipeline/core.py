@@ -29,7 +29,7 @@ LOG_DIR = TOOLS / "logs"
 STATE_DIR = TOOLS / "state"
 REPORT_DIR = TOOLS / "reports"
 VIDEO_EXTENSIONS = {".avi", ".mp4", ".mkv", ".mov", ".webm"}
-TRANSCRIPTION_REVISION = "chunked-v1"
+TRANSCRIPTION_REVISION = "chunked-v3"
 TRANSLATION_REVISION = "batched-v1"
 TRANSLATION_PROMPT_REVISION = "ja-zh-hans-v1"
 CHUNK_SECONDS = SETTINGS.chunk_seconds
@@ -130,8 +130,7 @@ def srt_timestamp(seconds: float) -> str:
 
 
 def segments_to_srt(segments: list[dict]) -> str:
-    blocks: list[str] = []
-    cue_number = 1
+    candidates: list[tuple[float, float, str]] = []
     common_silence_hallucinations = {
         "ご視聴ありがとうございました",
         "ご視聴ありがとうございます",
@@ -155,10 +154,25 @@ def segments_to_srt(segments: list[dict]) -> str:
             continue
         if not text or end <= start:
             continue
-        blocks.append(
-            f"{cue_number}\n{srt_timestamp(start)} --> {srt_timestamp(end)}\n{text}"
-        )
-        cue_number += 1
+        candidates.append((start, end, text))
+    kept: list[tuple[float, float, str]] = []
+    position = 0
+    while position < len(candidates):
+        end = position + 1
+        while end < len(candidates) and candidates[end][2] == candidates[position][2]:
+            end += 1
+        if end - position >= 4:
+            log(
+                f"FILTER normalized repetition burst ({end - position} cues) at "
+                f"{srt_timestamp(candidates[position][0])}: {candidates[position][2]!r}"
+            )
+        else:
+            kept.extend(candidates[position:end])
+        position = end
+    blocks = [
+        f"{number}\n{srt_timestamp(start)} --> {srt_timestamp(end)}\n{text}"
+        for number, (start, end, text) in enumerate(kept, start=1)
+    ]
     return "\n\n".join(blocks) + ("\n" if blocks else "")
 
 
@@ -218,6 +232,9 @@ def repetition_root(text: str) -> str:
 
 def filter_repetition_bursts(segments: list[dict]) -> list[dict]:
     """Drop runs of short repeated vocalizations that Whisper renders as words."""
+    # Empty decode windows are not cues and must not split an otherwise exact
+    # repetition run into smaller groups that evade the burst threshold.
+    segments = [segment for segment in segments if repetition_root(str(segment.get("text", "")).strip())]
     kept: list[dict] = []
     position = 0
     while position < len(segments):
@@ -366,6 +383,7 @@ def transcribe_one(video: Path, output: Path, clip: str = "0") -> None:
             shutil.rmtree(audio_dir, ignore_errors=True)
     if not rendered.strip():
         raise RuntimeError(f"Whisper produced no subtitle cues for {video.name}")
+    output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".partial")
     temporary.write_text(rendered, encoding="utf-8")
     errors = transcript_quality_errors(parse_srt(temporary))

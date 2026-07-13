@@ -1,4 +1,6 @@
 [paths]
+# May be repository-relative or an absolute path. Subtitle sidecars are written
+# beside the source videos, so the directory must be writable for processing.
 videos = "videos"
 runtime = ".subtitle-tools"
 

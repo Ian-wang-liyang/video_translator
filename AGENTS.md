@@ -29,8 +29,9 @@ change whenever a durable workflow, command, layout, or constraint changes.
 
 - Tracked source lives in `src/subtitle_pipeline`; setup utilities live in
   `scripts`; tests live in `tests`.
-- `videos/` contains private inputs and generated sidecars. Only `.gitkeep` may
-  be tracked.
+- The configured video directory contains private inputs and generated sidecars;
+  it may be repository-relative or an absolute external path. Only
+  `videos/.gitkeep` may be tracked from the default directory.
 - `.subtitle-tools/`, `.venv/`, `config.toml`, models, caches, logs, reports,
   state, checkpoints, samples, and quarantine are local runtime data.
 - Before commits, inspect `git status --ignored` and `git ls-files`; never stage
@@ -59,8 +60,13 @@ supported top-level video reported by inventory.
 Bootstrap a fresh clone with `python scripts/bootstrap.py --backend auto
 --non-interactive`. Bootstrap is the only network-required phase; processing
 after dependencies and models are installed is offline.
+Interrupted model downloads must remain resumable and must not be treated as
+complete until their pinned snapshot or model file is fully materialized.
 On Linux/WSL and Windows, auto-detection selects CUDA for an NVIDIA driver
 reporting CUDA 12.1 or newer; newer drivers use the project's CUDA 12.5 wheels.
+The Windows CUDA bootstrap also installs the pinned NVIDIA cuBLAS and CUDA
+runtimes and adds their DLL directories before loading faster-whisper or
+llama.cpp.
 Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
 --cuda-wheel cu125` when host `nvidia-smi` confirms a CUDA 12.5-or-newer driver.
 
@@ -74,6 +80,10 @@ Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
   Whisper. Use faster-whisper with VAD on Linux/WSL and Windows.
 - Reject empty, malformed, stale, misaligned, untranslated, internally
   repetitive, cross-cue repetitive, or implausibly long outputs.
+- Ignore empty Whisper decode windows when detecting consecutive repetition
+  bursts so blank segments cannot split and conceal a hallucination loop.
+- Repeat burst detection must also run after final cue whitespace normalization,
+  before SRT rendering and checkpoint validation.
 - Reuse Japanese outputs only when their provenance fingerprint matches the
   current video, output/clip, backend, model, and transcription revision. Reuse
   Chinese outputs only when their fingerprint matches the exact Japanese
@@ -87,8 +97,9 @@ Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
   invalidate approval whenever those artifacts change. Require current full
   validation immediately before bilingual generation. Full validation must
   reject missing, malformed, or stale transcription and translation provenance.
-- Keep configured video and runtime paths inside the repository and model paths
-  inside the runtime model directory.
+- Keep configured runtime paths inside the repository and model paths inside the
+  runtime model directory. Video paths may be external; treat every source video
+  as immutable and write only generated sidecars beside it.
 
 ## Change and execution discipline
 

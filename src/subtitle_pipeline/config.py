@@ -41,7 +41,7 @@ def load_settings(root: Path | None = None) -> Settings:
     if local.exists():
         data = tomllib.loads(local.read_text(encoding="utf-8"))
     runtime = _confined_path(root, data.get("paths", {}).get("runtime", ".subtitle-tools"), "runtime")
-    videos = _confined_path(root, data.get("paths", {}).get("videos", "videos"), "videos")
+    videos = _configured_path(root, data.get("paths", {}).get("videos", "videos"))
     backend = data.get("backend", {})
     system = platform.system()
     machine = platform.machine().lower()
@@ -90,3 +90,8 @@ def _confined_path(parent: Path, configured: str, label: str) -> Path:
     except ValueError as exc:
         raise ValueError(f"configured {label} path must remain inside {parent}") from exc
     return candidate
+
+
+def _configured_path(root: Path, configured: str) -> Path:
+    """Resolve a repository-relative or absolute user-configured path."""
+    return (root / Path(configured).expanduser()).resolve()

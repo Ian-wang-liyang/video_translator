@@ -46,8 +46,9 @@ Approval records are artifact-bound. Any change to a reviewed sample, the first
 video, or its monolingual subtitles invalidates the corresponding approval.
 Full validation rejects missing, malformed, or stale output provenance, and
 `bilingual` refuses to run unless current full validation succeeds. Configured
-runtime/video paths cannot escape the repository, and configured model paths
-cannot escape the runtime model directory.
+video paths may be repository-relative or absolute; runtime paths cannot escape
+the repository, and configured model paths cannot escape the runtime model
+directory. Treat source videos at every location as immutable.
 
 Never approve a sample on behalf of a human, delete private media, remove models,
 rename videos, clear quarantine, or publish a repository without explicit user

@@ -14,10 +14,13 @@ python scripts/bootstrap.py --backend auto --non-interactive
 
 The bootstrap creates `.venv`, installs the platform backend, and downloads
 models into ignored `.subtitle-tools/models`. After that, normal processing can
-run offline. Copy `config.example.toml` to `config.toml` only when overriding
-defaults.
+run offline. Interrupted model downloads are safely resumable. Copy
+`config.example.toml` to `config.toml` only when overriding defaults.
 
-Put source videos directly in `videos/`, then use the virtual-environment Python:
+Put source videos directly in `videos/`, or set `paths.videos` in ignored
+`config.toml` to a repository-relative or absolute directory. The configured
+directory must be writable because generated subtitle sidecars are stored beside
+the immutable source videos. Then use the virtual-environment Python:
 
 ```bash
 # Windows
@@ -61,6 +64,10 @@ output/clip, model, backend, and transcription provenance. Chinese outputs also
 require provenance for the exact Japanese source content and current translation
 pipeline. Full validation rejects outputs with missing, malformed, or stale
 provenance, including before bilingual generation.
+Blank Whisper decode windows do not interrupt repetition-burst detection; exact
+loops spanning those blanks are filtered before subtitle validation. Detection
+also runs after final cue whitespace normalization so formatting differences
+cannot conceal a loop.
 
 ## Backends
 
@@ -68,7 +75,8 @@ provenance, including before bilingual generation.
 - Linux/WSL and Windows default to faster-whisper and llama.cpp, using CUDA when
   an NVIDIA driver compatible with CUDA 12.1 or newer is detected and CPU
   otherwise. Newer drivers use the packaged CUDA 12.5 wheel through NVIDIA
-  backward compatibility.
+  backward compatibility. Windows CUDA installs pinned NVIDIA cuBLAS and CUDA
+  runtimes and exposes their DLLs to faster-whisper and llama.cpp automatically.
 - Override detection in ignored `config.toml` or pass an explicit bootstrap
   backend: `mac`, `linux-cuda`, `linux-cpu`, `windows-cuda`, or `windows-cpu`.
   If WSL or a container hides `nvidia-smi` from the bootstrap process, select
@@ -94,6 +102,7 @@ titles are checkpointed in `.subtitle-tools/reports/title-mapping.csv`, and
 Original videos are never rewritten. Generated files and all runtime data are
 ignored by Git.
 
-Configured video and runtime paths must remain inside the repository, and model
-paths must remain inside the runtime model directory. Rejected or stale subtitle
-outputs are preserved under `.subtitle-tools/quarantine/` before replacement.
+Configured video paths may be absolute and external. Runtime paths must remain
+inside the repository, and model paths must remain inside the runtime model
+directory. Rejected or stale subtitle outputs are preserved under
+`.subtitle-tools/quarantine/` before replacement.

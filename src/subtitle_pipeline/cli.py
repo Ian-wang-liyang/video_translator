@@ -87,9 +87,9 @@ def video_gate_fingerprint(settings: Settings, video: Path) -> str:
     transcription_metadata = core.provenance_path("transcription", japanese)
     translation_metadata = core.provenance_path("translation", chinese)
     try:
-        recorded_transcription = json.loads(transcription_metadata.read_text())["fingerprint"]
+        recorded_transcription = json.loads(transcription_metadata.read_text(encoding="utf-8"))["fingerprint"]
         transcription_current = recorded_transcription == core.transcription_fingerprint(video, japanese, "0")
-        recorded_translation = json.loads(translation_metadata.read_text())["fingerprint"]
+        recorded_translation = json.loads(translation_metadata.read_text(encoding="utf-8"))["fingerprint"]
         translation_current = recorded_translation == core.translation_fingerprint(japanese)
     except Exception:
         transcription_current = translation_current = False
@@ -277,8 +277,10 @@ def status(settings: Settings) -> dict:
     approved = False
     if approval.exists():
         try:
-            approval_data = json.loads(approval.read_text())
-            review_data = json.loads((settings.runtime_dir / "state" / "sample-review.json").read_text())
+            approval_data = json.loads(approval.read_text(encoding="utf-8"))
+            review_data = json.loads(
+                (settings.runtime_dir / "state" / "sample-review.json").read_text(encoding="utf-8")
+            )
             approved = (
                 sample_review_is_current(settings, review_data)
                 and approval_data["fingerprint"] == settings_fingerprint(settings)
@@ -290,7 +292,7 @@ def status(settings: Settings) -> dict:
     gate_approved = False
     if gate.exists():
         try:
-            gate_data = json.loads(gate.read_text())
+            gate_data = json.loads(gate.read_text(encoding="utf-8"))
             first = core.videos()[0] if core.videos() else None
             gate_approved = bool(
                 first
@@ -312,7 +314,9 @@ def status(settings: Settings) -> dict:
         review_current = False
         if review.exists():
             try:
-                review_current = json.loads(review.read_text())["fingerprint"] == settings_fingerprint(settings)
+                review_current = (
+                    json.loads(review.read_text(encoding="utf-8"))["fingerprint"] == settings_fingerprint(settings)
+                )
             except Exception:
                 pass
         action = "review_sample" if review_current else "run_sample"
@@ -359,7 +363,7 @@ def write_sample_review(settings: Settings, video: Path, japanese: Path, chinese
 def approve_sample(settings: Settings, note: str) -> None:
     review_path = settings.runtime_dir / "state" / "sample-review.json"
     try:
-        review = json.loads(review_path.read_text())
+        review = json.loads(review_path.read_text(encoding="utf-8"))
     except Exception as exc:
         raise ConfigurationError("no completed sample is awaiting review") from exc
     if not sample_review_is_current(settings, review):
@@ -491,7 +495,7 @@ def main(argv: list[str] | None = None) -> int:
             gate_approved = False
             if gate_path.exists():
                 try:
-                    gate_data = json.loads(gate_path.read_text())
+                    gate_data = json.loads(gate_path.read_text(encoding="utf-8"))
                     first = core.videos()[0] if core.videos() else None
                     gate_approved = bool(
                         first
