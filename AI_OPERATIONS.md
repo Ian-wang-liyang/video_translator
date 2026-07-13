@@ -36,6 +36,12 @@ and `130` interruption.
 - `resolve_failure`: inspect JSONL/human logs and the earliest invalid stage.
 - `validate`: run full validation, then generate bilingual outputs if requested.
 
+Approval records are artifact-bound. Any change to a reviewed sample, the first
+video, or its monolingual subtitles invalidates the corresponding approval.
+`bilingual` refuses to run unless current full validation succeeds. Configured
+runtime/video paths cannot escape the repository, and configured model paths
+cannot escape the runtime model directory.
+
 Never approve a sample on behalf of a human, delete private media, remove models,
 rename videos, clear quarantine, or publish a repository without explicit user
 authorization. Use `clean --dry-run` before proposing any cleanup.
