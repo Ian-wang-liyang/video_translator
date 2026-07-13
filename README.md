@@ -80,7 +80,9 @@ low-confidence cues, without Whisper's no-speech rejection. Recovery is checked
 against the CPU/float32 Japanese Kotoba specialist; detected clipping receives a
 temporary FFmpeg de-clipping pass. Explicit clip timestamps bypass
 faster-whisper's VAD, so foreground and recovery gates—not the configured VAD
-threshold—govern these windowed full-video calls. Empty outputs still fail
+threshold—govern these windowed full-video calls. A chunk with no accepted
+foreground speech may have an intentional empty checkpoint so unattended work
+can resume without repeating it; an empty assembled video output still fails
 validation.
 
 The quality-first Windows/Linux defaults use full Whisper `large-v3`, the

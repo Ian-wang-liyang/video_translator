@@ -59,6 +59,22 @@ def test_empty_transcript_fails():
     assert transcript_quality_errors([]) == ["transcript contains zero cues"]
 
 
+def test_intentionally_empty_chunk_checkpoint_is_valid(tmp_path: Path):
+    checkpoint = tmp_path / "chunk.srt"
+    checkpoint.write_text("", encoding="utf-8")
+
+    assert core.chunk_checkpoint_quality_errors(checkpoint, []) == []
+
+
+def test_nonempty_chunk_checkpoint_still_requires_parsed_cues(tmp_path: Path):
+    checkpoint = tmp_path / "chunk.srt"
+    checkpoint.write_text("not an srt\n", encoding="utf-8")
+
+    assert core.chunk_checkpoint_quality_errors(checkpoint, []) == [
+        "transcript contains zero cues"
+    ]
+
+
 def test_chunk_transcription_uses_independent_short_windows(tmp_path: Path, monkeypatch):
     class WindowedTranscriber:
         def __init__(self):

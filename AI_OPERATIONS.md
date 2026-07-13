@@ -72,6 +72,10 @@ process or request specialist word timestamps on Windows. Clipped rescue regions
 may use temporary de-clipped PCM; primary audio and source videos remain unchanged. Inspect
 `.subtitle-tools/reports/decode-warnings/` when FFmpeg reports corrupt source
 packets or when an alternate audio stream may exist.
+An individual atomic chunk checkpoint may be empty after every speech candidate
+fails the foreground, confidence, agreement, or hallucination gates. Resume
+accepts that checkpoint instead of decoding it again; the assembled full-video
+transcript must still be nonempty and pass normal validation.
 An explicitly user-authorized sample bypass must name one inventory video and
 use `process --video PATH --skip-sample-gate`; it must stop for full-video review.
 On Windows, the runner lock also holds a system-sleep inhibition request for the

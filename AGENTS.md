@@ -99,6 +99,10 @@ Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
   under runtime reports; never filter or rewrite the source video.
 - Reject empty, malformed, stale, misaligned, untranslated, internally
   repetitive, cross-cue repetitive, or implausibly long outputs.
+- Permit an individual atomic chunk checkpoint to be empty only when all primary
+  and recovery candidates were rejected by the foreground, confidence,
+  agreement, or hallucination gates. The assembled full-video transcript must
+  still contain valid cues.
 - Ignore empty Whisper decode windows when detecting consecutive repetition
   bursts so blank segments cannot split and conceal a hallucination loop.
 - Repeat burst detection must also run after final cue whitespace normalization,

@@ -304,6 +304,18 @@ def transcript_quality_errors(cues: list[Cue]) -> list[str]:
     return errors
 
 
+def chunk_checkpoint_quality_errors(checkpoint: Path, cues: list[Cue]) -> list[str]:
+    """Validate a chunk checkpoint while permitting an intentional empty result.
+
+    A chunk can legitimately contain no accepted foreground speech after the
+    primary, recovery, and hallucination filters run.  The assembled full-video
+    transcript is still required to contain cues.
+    """
+    if not checkpoint.read_text(encoding="utf-8").strip():
+        return []
+    return transcript_quality_errors(cues)
+
+
 def filter_foreground_segments(
     audio_chunk: Path, segments: list[dict], minimum_dbfs: float | None = None
 ) -> list[dict]:
@@ -636,13 +648,17 @@ def transcribe_one(video: Path, output: Path, clip: str = "0") -> None:
                 checkpoint = checkpoint_dir / f"chunk-{number:04d}.srt"
                 if checkpoint.exists():
                     chunk_cues = parse_srt(checkpoint)
-                    chunk_errors = transcript_quality_errors(chunk_cues)
+                    chunk_errors = chunk_checkpoint_quality_errors(checkpoint, chunk_cues)
                     if chunk_errors:
                         checkpoint.unlink()
                         chunk_cues = []
+                        checkpoint_valid = False
+                    else:
+                        checkpoint_valid = True
                 else:
                     chunk_cues = []
-                if not chunk_cues:
+                    checkpoint_valid = False
+                if not checkpoint_valid:
                     try:
                         chunk_duration, warnings = decode_pcm_clip(
                             video, audio_chunk, offset, expected_duration
@@ -660,11 +676,16 @@ def transcribe_one(video: Path, output: Path, clip: str = "0") -> None:
                         chunk_text = segments_to_srt(adjusted)
                         atomic_write(checkpoint, chunk_text)
                         chunk_cues = parse_srt(checkpoint)
-                        chunk_errors = transcript_quality_errors(chunk_cues)
+                        chunk_errors = chunk_checkpoint_quality_errors(checkpoint, chunk_cues)
                         if chunk_errors:
                             raise RuntimeError(
                                 f"chunk {number + 1}/{chunk_count} failed quality validation: "
                                 + "; ".join(chunk_errors)
+                            )
+                        if not chunk_cues:
+                            log(
+                                f"CHECKPOINT no accepted foreground speech "
+                                f"for chunk {number + 1}/{chunk_count}"
                             )
                     finally:
                         audio_chunk.unlink(missing_ok=True)
