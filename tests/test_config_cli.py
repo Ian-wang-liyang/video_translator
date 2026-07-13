@@ -1,3 +1,4 @@
+import importlib.util
 import json
 from pathlib import Path
 
@@ -7,12 +8,23 @@ from subtitle_pipeline import cli
 from subtitle_pipeline.cli import (
     ActiveRunnerError,
     approve_sample,
+    build_parser,
     run_lock,
+    runner_lock_state,
     sample_review_is_current,
     settings_fingerprint,
     status,
 )
 from subtitle_pipeline.config import load_settings
+
+
+def load_bootstrap_module():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "bootstrap.py"
+    spec = importlib.util.spec_from_file_location("bootstrap", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_explicit_cpu_configuration(tmp_path: Path):
@@ -48,11 +60,25 @@ def test_example_config_is_valid():
     assert json.loads((root / "models.json").read_text(encoding="utf-8"))
 
 
+@pytest.mark.parametrize(
+    ("reported_version", "expected"),
+    [("12.1", "cu121"), ("12.5", "cu125"), ("13.3", "cu125"), ("11.8", None)],
+)
+def test_cuda_wheel_tag_uses_newest_compatible_wheel(monkeypatch, reported_version: str, expected: str | None):
+    bootstrap = load_bootstrap_module()
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda command: "/usr/bin/nvidia-smi")
+    result = type("Result", (), {"stdout": f"CUDA Version: {reported_version}"})()
+    monkeypatch.setattr(bootstrap.subprocess, "run", lambda *args, **kwargs: result)
+    assert bootstrap.cuda_wheel_tag() == expected
+
+
 def test_run_lock_is_released(tmp_path: Path):
     settings = load_settings(tmp_path)
     with run_lock(settings):
-        assert (settings.runtime_dir / "state" / "runner.lock").is_dir()
+        assert (settings.runtime_dir / "state" / "runner.lock").is_file()
+        assert runner_lock_state(settings) == ("active", cli.os.getpid())
     assert not (settings.runtime_dir / "state" / "runner.lock").exists()
+    assert runner_lock_state(settings) == ("absent", None)
 
 
 def test_run_lock_rejects_duplicate(tmp_path: Path):
@@ -61,6 +87,38 @@ def test_run_lock_rejects_duplicate(tmp_path: Path):
         with pytest.raises(ActiveRunnerError):
             with run_lock(settings):
                 pass
+        assert not list((settings.runtime_dir / "state").glob(".runner.lock-*.json"))
+
+
+def test_run_lock_reclaims_definitively_stale_owner(tmp_path: Path, monkeypatch):
+    settings = load_settings(tmp_path)
+    lock = settings.runtime_dir / "state" / "runner.lock"
+    lock.mkdir(parents=True)
+    (lock / "owner.json").write_text('{"pid": 1234, "token": "stale"}\n', encoding="utf-8")
+    monkeypatch.setattr(cli, "process_alive", lambda pid: False)
+
+    with run_lock(settings):
+        owner = json.loads(lock.read_text(encoding="utf-8"))
+        assert owner["pid"] != 1234
+        assert owner["token"] != "stale"
+
+
+def test_run_lock_fails_closed_when_owner_is_not_readable(tmp_path: Path):
+    settings = load_settings(tmp_path)
+    lock = settings.runtime_dir / "state" / "runner.lock"
+    lock.mkdir(parents=True)
+    assert runner_lock_state(settings) == ("unreadable", None)
+
+    with pytest.raises(ActiveRunnerError, match="ownership is missing or unreadable"):
+        with run_lock(settings):
+            pass
+    assert not list((settings.runtime_dir / "state").glob(".runner.lock-*.json"))
+
+
+def test_sample_minutes_must_be_positive():
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["sample", "--minutes", "0"])
 
 
 def test_process_alive_uses_non_signaling_windows_check(monkeypatch):

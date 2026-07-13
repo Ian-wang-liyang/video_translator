@@ -1,5 +1,8 @@
+import csv
 import json
 from pathlib import Path
+
+import pytest
 
 from subtitle_pipeline import core
 from subtitle_pipeline.core import Cue, cue_text_quality_error, filter_repetition_bursts, transcript_quality_errors
@@ -95,3 +98,36 @@ def test_quarantine_preserves_rejected_output(tmp_path: Path, monkeypatch):
     assert destination is not None
     assert not output.exists()
     assert destination.read_text(encoding="utf-8").endswith("古い字幕\n")
+
+
+def test_full_validation_rejects_stale_provenance(tmp_path: Path, monkeypatch):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video")
+    japanese = tmp_path / "video.ja.srt"
+    chinese = tmp_path / "video.zh-Hans.srt"
+    write_srt(japanese, "日本語です")
+    write_srt(chinese, "这是日语")
+    state = tmp_path / "state"
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    with (reports / "title-mapping.csv").open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["original_filename", "suggested_simplified_chinese_title"])
+        writer.writerow([video.name, "视频"])
+    monkeypatch.setattr(core, "STATE_DIR", state)
+    monkeypatch.setattr(core, "REPORT_DIR", reports)
+    monkeypatch.setattr(core, "VIDEO_DIR", tmp_path)
+    monkeypatch.setattr(core, "video_duration_ms", lambda _: 1_000)
+    core.atomic_write(
+        core.provenance_path("transcription", japanese),
+        json.dumps({"fingerprint": core.transcription_fingerprint(video, japanese, "0")}),
+    )
+    core.atomic_write(
+        core.provenance_path("translation", chinese),
+        json.dumps({"fingerprint": "stale"}),
+    )
+
+    with pytest.raises(RuntimeError, match="Validation found 1 failure"):
+        core.validate()
+
+    assert "stale translation provenance" in (reports / "validation.tsv").read_text(encoding="utf-8")

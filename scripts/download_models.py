@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--platform", choices=("mac", "windows"), required=True)
+    parser.add_argument("--platform", choices=("mac", "linux", "windows"), required=True)
     parser.add_argument("--offline", action="store_true")
     args = parser.parse_args()
     manifest = json.loads((ROOT / "models.json").read_text(encoding="utf-8"))[args.platform]

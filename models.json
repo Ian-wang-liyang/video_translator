@@ -11,6 +11,19 @@
       "directory": "qwen3-4b-instruct-4bit"
     }
   },
+  "linux": {
+    "whisper": {
+      "repo": "deepdml/faster-whisper-large-v3-turbo-ct2",
+      "revision": "4df90f75321148c3a29a9e2351b7ddf8f5b115a8",
+      "directory": "faster-whisper-large-v3-turbo"
+    },
+    "translation": {
+      "repo": "DevQuasar/Qwen.Qwen3-4B-Instruct-2507-GGUF",
+      "revision": "034dcb090130f6bb02475c564f0a8217c9eb436c",
+      "filename": "Qwen.Qwen3-4B-Instruct-2507.Q4_K_M.gguf",
+      "directory": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    }
+  },
   "windows": {
     "whisper": {
       "repo": "deepdml/faster-whisper-large-v3-turbo-ct2",

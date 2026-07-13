@@ -12,6 +12,8 @@ dependencies = ["huggingface-hub>=0.27,<2"]
 [project.optional-dependencies]
 mac = ["mlx==0.32.0", "mlx-metal==0.32.0", "mlx-whisper==0.4.3", "mlx-lm==0.31.3"]
 windows = ["faster-whisper==1.2.1", "llama-cpp-python==0.3.23"]
+linux = ["faster-whisper==1.2.1", "llama-cpp-python==0.3.23"]
+cuda = ["faster-whisper==1.2.1"]
 dev = ["pytest>=8.3,<9", "ruff>=0.9,<1"]
 
 [project.scripts]

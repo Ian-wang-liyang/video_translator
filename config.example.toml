@@ -3,8 +3,9 @@ videos = "videos"
 runtime = ".subtitle-tools"
 
 [backend]
-# auto selects MLX/Metal on Apple Silicon. Elsewhere it selects faster-whisper
-# and llama.cpp, using CUDA when an NVIDIA GPU is detected and CPU otherwise.
+# auto selects MLX/Metal on Apple Silicon. Linux/WSL and Windows select
+# faster-whisper and llama.cpp, using CUDA when a compatible NVIDIA driver is
+# detected and CPU otherwise.
 transcription = "auto"
 translation = "auto"
 device = "auto"

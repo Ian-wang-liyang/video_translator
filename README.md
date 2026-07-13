@@ -26,7 +26,7 @@ Put source videos directly in `videos/`, then use the virtual-environment Python
 .venv\Scripts\python -m subtitle_pipeline --json status
 .venv\Scripts\python -m subtitle_pipeline sample --minutes 5
 
-# macOS
+# macOS and Linux/WSL
 .venv/bin/python -m subtitle_pipeline --json doctor
 .venv/bin/python -m subtitle_pipeline --json inventory
 .venv/bin/python -m subtitle_pipeline --json status
@@ -51,20 +51,29 @@ before moving to the next. The first `process` invocation stops after one video;
 after that output is reviewed and approved, the second invocation processes the
 remaining collection.
 
+`sample --minutes` requires a positive duration. If `--video` is supplied, it
+must select a supported top-level video listed by `inventory`.
+
 Sample and complete-video approvals are invalidated when configured backend,
 device, model path, chunk duration, or explicit transcription/translation prompt
 revisions change. Japanese outputs are reused only with matching video,
 output/clip, model, backend, and transcription provenance. Chinese outputs also
 require provenance for the exact Japanese source content and current translation
-pipeline.
+pipeline. Full validation rejects outputs with missing, malformed, or stale
+provenance, including before bilingual generation.
 
 ## Backends
 
 - Apple Silicon defaults to MLX/Metal.
-- Windows defaults to faster-whisper and llama.cpp, using CUDA when a supported
-  NVIDIA/CUDA 12.1–12.5 environment is detected and CPU otherwise.
+- Linux/WSL and Windows default to faster-whisper and llama.cpp, using CUDA when
+  an NVIDIA driver compatible with CUDA 12.1 or newer is detected and CPU
+  otherwise. Newer drivers use the packaged CUDA 12.5 wheel through NVIDIA
+  backward compatibility.
 - Override detection in ignored `config.toml` or pass an explicit bootstrap
-  backend: `mac`, `windows-cuda`, or `windows-cpu`.
+  backend: `mac`, `linux-cuda`, `linux-cpu`, `windows-cuda`, or `windows-cpu`.
+  If WSL or a container hides `nvidia-smi` from the bootstrap process, select
+  the driver-compatible packaged wheel explicitly, for example
+  `--backend linux-cuda --cuda-wheel cu125` for a CUDA 12.5-or-newer driver.
 
 Use `python -m subtitle_pipeline --json status` for stable machine-readable
 progress and a `next_action`. See [AI_OPERATIONS.md](AI_OPERATIONS.md) for the
@@ -88,6 +97,3 @@ ignored by Git.
 Configured video and runtime paths must remain inside the repository, and model
 paths must remain inside the runtime model directory. Rejected or stale subtitle
 outputs are preserved under `.subtitle-tools/quarantine/` before replacement.
-Sample and first-video approvals are bound to the exact reviewed artifacts;
-changing those files invalidates approval. `bilingual` always reruns full
-validation before writing combined subtitles.
