@@ -61,8 +61,11 @@ SRT, move it into `.subtitle-tools/quarantine/`. For decode failures, inspect
 with FFprobe and test a short sequential FFmpeg decode. For repetition or
 hallucination, stop translation, identify the earliest bad chunk, adjust the
 quality gate, and rerun the sample.
-When filtering empties a faster-whisper chunk, processing automatically retries
-the unchanged PCM chunk in independent 30-second windows before failing it.
+Faster-whisper always decodes the unchanged five-minute PCM chunks in independent
+30-second windows, then removes segments below the configured foreground dBFS
+threshold before normal quality validation.
+An explicitly user-authorized sample bypass must name one inventory video and
+use `process --video PATH --skip-sample-gate`; it must stop for full-video review.
 
 The human-readable log is `.subtitle-tools/logs/pipeline.log`; structured status
 records, approvals, provenance, locks, and transcription checkpoints live under

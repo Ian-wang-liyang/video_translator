@@ -35,7 +35,11 @@ def emit(payload: dict, json_output: bool) -> None:
 def settings_fingerprint(settings: Settings) -> str:
     material = "|".join(
         [settings.transcription_backend, settings.translation_backend, settings.device,
-         str(settings.chunk_seconds), str(settings.whisper_model), str(settings.translation_model),
+         str(settings.chunk_seconds), str(settings.decode_window_seconds),
+         str(settings.vad_threshold), str(settings.foreground_min_dbfs),
+         str(settings.translation_context_cues), str(settings.translation_n_ctx),
+         str(settings.translation_gpu_layers), str(settings.whisper_model),
+         str(settings.translation_model),
          core.TRANSCRIPTION_REVISION, core.TRANSLATION_REVISION, core.TRANSLATION_PROMPT_REVISION]
     )
     return hashlib.sha256(material.encode()).hexdigest()
@@ -43,6 +47,28 @@ def settings_fingerprint(settings: Settings) -> str:
 
 def file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def inventory_video(configured: Path) -> Path:
+    chosen = configured.resolve()
+    available = {video.resolve(): video for video in core.videos()}
+    if chosen not in available:
+        raise ConfigurationError("video must be a supported top-level input reported by inventory")
+    return available[chosen]
+
+
+def gate_candidate(settings: Settings, gate_data: dict | None = None) -> Path | None:
+    data = gate_data
+    if data is None:
+        review_path = settings.runtime_dir / "state" / "video-gate-review.json"
+        try:
+            data = json.loads(review_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = None
+    name = data.get("video") if data else None
+    if name:
+        return next((video for video in core.videos() if video.name == name), None)
+    return core.videos()[0] if core.videos() else None
 
 
 def review_fingerprint(settings: Settings, review: dict) -> str:
@@ -291,7 +317,7 @@ def status(settings: Settings) -> dict:
     if gate.exists():
         try:
             gate_data = json.loads(gate.read_text(encoding="utf-8"))
-            first = core.videos()[0] if core.videos() else None
+            first = gate_candidate(settings, gate_data)
             gate_approved = bool(
                 first
                 and gate_data["settings_fingerprint"] == settings_fingerprint(settings)
@@ -307,7 +333,7 @@ def status(settings: Settings) -> dict:
         action = "monitor"
     elif data["video_count"] == 0:
         action = "add_videos"
-    elif not approved:
+    elif not approved and not gate_approved:
         review = settings.runtime_dir / "state" / "sample-review.json"
         review_current = False
         if review.exists():
@@ -317,11 +343,28 @@ def status(settings: Settings) -> dict:
                 )
             except Exception:
                 pass
-        action = "review_sample" if review_current else "run_sample"
-    elif not gate_approved:
-        first = core.videos()[0] if core.videos() else None
+        full_review = settings.runtime_dir / "state" / "video-gate-review.json"
+        full_review_current = False
+        if full_review.exists():
+            try:
+                full_data = json.loads(full_review.read_text(encoding="utf-8"))
+                candidate = gate_candidate(settings, full_data)
+                full_review_current = bool(
+                    candidate
+                    and full_data["settings_fingerprint"] == settings_fingerprint(settings)
+                    and full_data["artifact_fingerprint"] == video_gate_fingerprint(settings, candidate)
+                )
+            except Exception:
+                pass
         action = (
-            "review_first_video"
+            "review_full_video"
+            if full_review_current
+            else ("review_sample" if review_current else "run_sample")
+        )
+    elif not gate_approved:
+        first = gate_candidate(settings)
+        action = (
+            "review_full_video"
             if first and first.with_suffix(".zh-Hans.srt").exists()
             else "process_first_video"
         )
@@ -407,7 +450,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     for command in ("doctor", "inventory", "status", "validate", "bilingual"):
         sub.add_parser(command)
-    sub.add_parser("process")
+    process = sub.add_parser("process")
+    process.add_argument("--video", type=Path)
+    process.add_argument(
+        "--skip-sample-gate",
+        action="store_true",
+        help="Process one explicit full video without sample approval; requires explicit operator authorization",
+    )
     sample = sub.add_parser("sample")
     sample.add_argument("--video", type=Path)
     sample.add_argument("--minutes", type=positive_int, default=5)
@@ -466,9 +515,9 @@ def main(argv: list[str] | None = None) -> int:
             approve_sample(settings, args.note)
             emit({"ok": True, "next_action": "process_first_video"}, args.json)
         elif args.command == "approve-video-gate":
-            first = core.videos()[0] if core.videos() else None
+            first = gate_candidate(settings)
             if first is None or not first.with_suffix(".zh-Hans.srt").exists():
-                raise ConfigurationError("the first video has no completed Chinese subtitle to approve")
+                raise ConfigurationError("the full-video review candidate has no completed Chinese subtitle")
             artifact_fingerprint = video_gate_fingerprint(settings, first)
             path = settings.runtime_dir / "state" / "video-gate-approved.json"
             core.atomic_write(
@@ -488,13 +537,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             emit({"ok": True, "next_action": "resume"}, args.json)
         elif args.command == "process":
-            require_approval(settings)
+            if args.skip_sample_gate and args.video is None:
+                raise ConfigurationError("--skip-sample-gate requires an explicit --video")
+            chosen = inventory_video(args.video) if args.video is not None else None
             gate_path = settings.runtime_dir / "state" / "video-gate-approved.json"
             gate_approved = False
             if gate_path.exists():
                 try:
                     gate_data = json.loads(gate_path.read_text(encoding="utf-8"))
-                    first = core.videos()[0] if core.videos() else None
+                    first = gate_candidate(settings, gate_data)
                     gate_approved = bool(
                         first
                         and gate_data["settings_fingerprint"] == settings_fingerprint(settings)
@@ -502,9 +553,30 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 except Exception:
                     pass
+            if not args.skip_sample_gate and not gate_approved:
+                require_approval(settings)
             with run_lock(settings):
-                core.process_collection(max_videos=None if gate_approved else 1)
-            next_action = "validate" if gate_approved else "review_first_video"
+                core.process_collection(
+                    max_videos=None if gate_approved and chosen is None else 1,
+                    selected_video=chosen,
+                )
+            if chosen is not None and not gate_approved:
+                review_path = settings.runtime_dir / "state" / "video-gate-review.json"
+                core.atomic_write(
+                    review_path,
+                    json.dumps(
+                        {
+                            "settings_fingerprint": settings_fingerprint(settings),
+                            "artifact_fingerprint": video_gate_fingerprint(settings, chosen),
+                            "video": chosen.name,
+                            "sample_gate_skipped": bool(args.skip_sample_gate),
+                            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    ) + "\n",
+                )
+            next_action = "validate" if gate_approved and chosen is None else "review_full_video"
             emit({"ok": True, "next_action": next_action}, args.json)
         elif args.command == "validate":
             try:

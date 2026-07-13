@@ -14,8 +14,17 @@ device = "auto"
 
 [processing]
 chunk_seconds = 300
+# Quality-first defaults: independent Whisper windows prevent long decoding
+# loops; stricter VAD and the PCM level gate omit low-level/background speech.
+decode_window_seconds = 30
+vad_threshold = 0.65
+foreground_min_dbfs = -36.0
+translation_context_cues = 2
+translation_n_ctx = 4096
+# -1 offloads every layer. Reduce this if a small GPU cannot initialize Qwen.
+translation_gpu_layers = -1
 
 [models]
 # Values are paths relative to <runtime>/models. Leave absent to use defaults.
-# whisper = "whisper-large-v3-turbo"
-# translation = "qwen3-4b-instruct-4bit"
+# whisper = "faster-whisper-large-v3"
+# translation = "Qwen3-8B-Q4_K_M.gguf"

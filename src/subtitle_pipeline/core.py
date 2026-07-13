@@ -6,12 +6,15 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
+import math
 import re
 import shutil
 import subprocess
 import time
 import unicodedata
+import wave
 import zlib
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,11 +31,10 @@ LOG_DIR = TOOLS / "logs"
 STATE_DIR = TOOLS / "state"
 REPORT_DIR = TOOLS / "reports"
 VIDEO_EXTENSIONS = {".avi", ".mp4", ".mkv", ".mov", ".webm"}
-TRANSCRIPTION_REVISION = "chunked-v4"
-TRANSLATION_REVISION = "batched-v1"
-TRANSLATION_PROMPT_REVISION = "ja-zh-hans-v1"
+TRANSCRIPTION_REVISION = "foreground-windowed-v5"
+TRANSLATION_REVISION = "contextual-batched-v2"
+TRANSLATION_PROMPT_REVISION = "ja-zh-hans-v2"
 CHUNK_SECONDS = SETTINGS.chunk_seconds
-WHISPER_FALLBACK_SECONDS = 30
 _TRANSCRIBER = None
 JSON_OUTPUT = False
 TIMING_RE = re.compile(
@@ -292,27 +294,48 @@ def transcript_quality_errors(cues: list[Cue]) -> list[str]:
     return errors
 
 
-def transcribe_chunk_segments(audio_chunk: Path, duration: float) -> list[dict]:
-    """Transcribe one PCM chunk, retrying empty filtered results in short windows."""
-    result = _TRANSCRIBER.transcribe(str(audio_chunk))
-    segments = filter_repetition_bursts(result.get("segments", []))
-    if segments_to_srt(segments).strip():
-        return segments
+def filter_foreground_segments(
+    audio_chunk: Path, segments: list[dict], minimum_dbfs: float | None = None
+) -> list[dict]:
+    """Drop speech segments whose PCM level is below the foreground threshold."""
+    threshold = SETTINGS.foreground_min_dbfs if minimum_dbfs is None else minimum_dbfs
+    with wave.open(str(audio_chunk), "rb") as handle:
+        if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
+            raise ValueError(f"foreground filtering requires mono 16-bit PCM: {audio_chunk}")
+        sample_rate = handle.getframerate()
+        samples = array("h", handle.readframes(handle.getnframes()))
+    kept: list[dict] = []
+    for segment in segments:
+        start = max(0, round(float(segment.get("start", 0)) * sample_rate))
+        end = min(len(samples), round(float(segment.get("end", 0)) * sample_rate))
+        if end <= start:
+            continue
+        window = samples[start:end]
+        rms = math.sqrt(sum(sample * sample for sample in window) / len(window))
+        dbfs = 20 * math.log10(max(rms, 1) / 32768)
+        if dbfs < threshold:
+            log(
+                f"FILTER low-level speech at {srt_timestamp(float(segment.get('start', 0)))}: "
+                f"{dbfs:.1f} dBFS < {threshold:.1f} dBFS"
+            )
+            continue
+        kept.append(segment)
+    return kept
 
-    log(
-        f"RETRY transcription {audio_chunk.name}: no valid cues after filtering; "
-        f"using {WHISPER_FALLBACK_SECONDS}-second decode windows"
-    )
+
+def transcribe_chunk_segments(audio_chunk: Path, duration: float) -> list[dict]:
+    """Transcribe one PCM chunk as independent short windows and keep foreground speech."""
     recovered: list[dict] = []
     start = 0
     while start < duration:
-        end = min(duration, start + WHISPER_FALLBACK_SECONDS)
+        end = min(duration, start + SETTINGS.decode_window_seconds)
         result = _TRANSCRIBER.transcribe(
             str(audio_chunk), clip_timestamps=f"{start},{end}"
         )
         recovered.extend(result.get("segments", []))
-        start += WHISPER_FALLBACK_SECONDS
-    return filter_repetition_bursts(recovered)
+        start += SETTINGS.decode_window_seconds
+    foreground = filter_foreground_segments(audio_chunk, recovered)
+    return filter_repetition_bursts(foreground)
 
 
 def transcribe_one(video: Path, output: Path, clip: str = "0") -> None:
@@ -455,17 +478,32 @@ def parse_numbered_response(response: str, count: int) -> list[str] | None:
     return [found[number] for number in range(1, count + 1)]
 
 
-def translate_group(model, tokenizer, texts: list[str]) -> list[str]:
+def translate_group(
+    model,
+    tokenizer,
+    texts: list[str],
+    *,
+    context_before: list[str] | None = None,
+    context_after: list[str] | None = None,
+) -> list[str]:
     numbered = "\n".join(f"[{i}] {text}" for i, text in enumerate(texts, 1))
+    context_lines = [
+        *(f"Previous context: {text}" for text in (context_before or [])),
+        *(f"Following context: {text}" for text in (context_after or [])),
+    ]
+    context = "\n".join(context_lines) or "(no surrounding context)"
     instruction = (
         "Translate these Japanese subtitle cues into natural, concise Simplified Chinese.\n"
+        "Use the surrounding dialogue only to resolve meaning, names, pronouns, and sentence fragments. "
+        "Do not translate or return the context lines.\n"
         "Preserve names, episode/catalogue codes, numbers, and meaning. Render Japanese names "
         "in suitable Chinese characters or Chinese phonetic transcription. Do not censor or summarize.\n"
         "Return exactly one translated item for every input using the same [number] markers.\n"
         "Use Chinese script only: do not leave any Japanese hiragana or katakana. Do not include "
         "Japanese originals, explanations, markdown, or timestamps.\n"
         "If an utterance is genuinely too unclear to translate, return （日语发音不清） for that item.\n\n"
-        f"{numbered}"
+        f"Surrounding dialogue (context only):\n{context}\n\n"
+        f"Numbered cues to translate:\n{numbered}"
     )
     for attempt in range(3):
         response = generate_response(model, tokenizer, instruction, max_tokens=max(256, len(texts) * 100))
@@ -481,8 +519,16 @@ def translate_group(model, tokenizer, texts: list[str]) -> list[str]:
         log(f"WARN malformed or Japanese-script translation response; retry {attempt + 1}/3")
     if len(texts) > 1:
         output: list[str] = []
-        for text in texts:
-            output.extend(translate_group(model, tokenizer, [text]))
+        for index, text in enumerate(texts):
+            output.extend(
+                translate_group(
+                    model,
+                    tokenizer,
+                    [text],
+                    context_before=[*(context_before or []), *texts[:index]],
+                    context_after=[*texts[index + 1 :], *(context_after or [])],
+                )
+            )
         return output
     log(f"WARN using unclear-speech fallback for cue: {texts[0]!r}")
     return ["（日语发音不清）"]
@@ -522,7 +568,19 @@ def translate_srt(model, tokenizer, source: Path, destination: Path) -> None:
     log(f"START translation: {source.name}")
     for offset in range(0, len(source_cues), 10):
         group = source_cues[offset : offset + 10]
-        chinese = translate_group(model, tokenizer, [cue.text for cue in group])
+        context_size = SETTINGS.translation_context_cues
+        before = [cue.text for cue in source_cues[max(0, offset - context_size) : offset]]
+        after = [
+            cue.text
+            for cue in source_cues[offset + len(group) : offset + len(group) + context_size]
+        ]
+        chinese = translate_group(
+            model,
+            tokenizer,
+            [cue.text for cue in group],
+            context_before=before,
+            context_after=after,
+        )
         translated.extend(
             Cue(index=cue.index, timing=cue.timing, text=text)
             for cue, text in zip(group, chinese, strict=True)
@@ -533,11 +591,13 @@ def translate_srt(model, tokenizer, source: Path, destination: Path) -> None:
     log(f"DONE translation: {destination.name}")
 
 
-def process_collection(max_videos: int | None = None) -> None:
+def process_collection(max_videos: int | None = None, selected_video: Path | None = None) -> None:
     """Finish transcription and translation for one video at a time."""
     transcription_failures: list[str] = []
     translation_failures: list[str] = []
-    items = videos()[:max_videos] if max_videos is not None else videos()
+    items = [selected_video] if selected_video is not None else videos()
+    if max_videos is not None:
+        items = items[:max_videos]
     for video in items:
         japanese = video.with_suffix(".ja.srt")
         chinese = video.with_suffix(".zh-Hans.srt")

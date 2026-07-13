@@ -84,9 +84,9 @@ Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
   bursts so blank segments cannot split and conceal a hallucination loop.
 - Repeat burst detection must also run after final cue whitespace normalization,
   before SRT rendering and checkpoint validation.
-- If filtering leaves a five-minute faster-whisper chunk with no valid cues,
-  retry that same PCM chunk as independent 30-second decode windows, combine
-  and validate the recovered cues, and still reject a genuinely empty result.
+- Run faster-whisper over each five-minute PCM chunk as independent 30-second
+  decode windows. Use strict VAD and a PCM dBFS foreground gate to omit
+  low-level/background speech, then combine and validate the retained cues.
 - Reuse Japanese outputs only when their provenance fingerprint matches the
   current video, output/clip, backend, model, and transcription revision. Reuse
   Chinese outputs only when their fingerprint matches the exact Japanese
@@ -116,6 +116,9 @@ Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
   process private media.
 - On a new backend, model, prompt, or transcription revision, require a reviewed
   five-minute sample and then one complete-video gate before advancing.
+- Only when the user explicitly authorizes skipping that sample, process one
+  explicit inventory video with `process --video PATH --skip-sample-gate` and
+  stop at the complete-video human review gate. Never use the flag implicitly.
 - Automated checks establish structural integrity, not human-level linguistic
   quality. Never claim subtitles are perfect or human-verified without review.
 - Do not automatically remove models as recovery. Report disk pressure and stop

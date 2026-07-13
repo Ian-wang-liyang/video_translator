@@ -184,6 +184,14 @@ def test_sample_minutes_must_be_positive():
         parser.parse_args(["sample", "--minutes", "0"])
 
 
+def test_parser_exposes_explicit_full_video_sample_bypass():
+    args = build_parser().parse_args(
+        ["process", "--video", "video.avi", "--skip-sample-gate"]
+    )
+    assert args.video == Path("video.avi")
+    assert args.skip_sample_gate is True
+
+
 def test_process_alive_uses_non_signaling_windows_check(monkeypatch):
     checked: list[int] = []
     monkeypatch.setattr(cli.os, "name", "nt")

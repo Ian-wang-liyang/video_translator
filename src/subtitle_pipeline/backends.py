@@ -62,6 +62,7 @@ class MLXTranscriber:
 
 class FasterWhisperTranscriber:
     def __init__(self, settings: Settings):
+        self.settings = settings
         if settings.device == "cuda":
             configure_windows_cuda_dlls()
         from faster_whisper import WhisperModel
@@ -79,9 +80,14 @@ class FasterWhisperTranscriber:
             task="transcribe",
             beam_size=5,
             vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 500},
+            vad_parameters={
+                "threshold": self.settings.vad_threshold,
+                "min_speech_duration_ms": 250,
+                "min_silence_duration_ms": 500,
+                "speech_pad_ms": 200,
+            },
             condition_on_previous_text=False,
-            temperature=0.0,
+            temperature=(0.0, 0.2, 0.4, 0.6),
             **options,
         )
         return {"segments": [asdict(segment) for segment in segments]}
@@ -108,16 +114,16 @@ class LlamaCppTranslator:
         if settings.device == "cuda":
             configure_windows_cuda_dlls()
         from llama_cpp import Llama
-        layers = -1 if settings.device == "cuda" else 0
+        layers = settings.translation_gpu_layers if settings.device == "cuda" else 0
         self.model = Llama(
-            model_path=str(settings.translation_model), n_ctx=8192,
+            model_path=str(settings.translation_model), n_ctx=settings.translation_n_ctx,
             n_gpu_layers=layers, verbose=False,
         )
 
     def generate(self, instruction: str, max_tokens: int) -> str:
         result = self.model.create_chat_completion(
-            messages=_messages(instruction), temperature=0.0,
-            max_tokens=max_tokens, seed=0,
+            messages=_messages(instruction), temperature=0.2, top_p=0.8,
+            repeat_penalty=1.1, max_tokens=max_tokens, seed=0,
         )
         return str(result["choices"][0]["message"]["content"]).strip()
 
@@ -131,7 +137,7 @@ def _messages(instruction: str) -> list[dict[str, str]]:
                 "Follow the output format exactly. Never add commentary."
             ),
         },
-        {"role": "user", "content": instruction},
+        {"role": "user", "content": instruction + "\n/no_think"},
     ]
 
 

@@ -68,10 +68,18 @@ Blank Whisper decode windows do not interrupt repetition-burst detection; exact
 loops spanning those blanks are filtered before subtitle validation. Detection
 also runs after final cue whitespace normalization so formatting differences
 cannot conceal a loop.
-If a five-minute faster-whisper chunk becomes empty after hallucination
-filtering, the pipeline retries that same PCM audio in independent 30-second
-decode windows. The combined result must still pass the normal quality gates;
-empty outputs remain failures.
+Faster-whisper runs every five-minute PCM chunk as independent 30-second decode
+windows. Strict VAD and a configurable PCM dBFS gate omit low-level/background
+speech before cues are combined. Empty outputs still fail validation. The
+quality-first Windows/Linux defaults use full Whisper `large-v3` and Qwen3 8B
+Q4_K_M; translation batches include neighboring dialogue as context.
+
+When a user explicitly authorizes bypassing the sample for a quality migration,
+process exactly one alternate inventory video and stop for full-video review:
+
+```text
+python -m subtitle_pipeline process --video "PATH" --skip-sample-gate
+```
 
 ## Backends
 
@@ -81,6 +89,8 @@ empty outputs remain failures.
   otherwise. Newer drivers use the packaged CUDA 12.5 wheel through NVIDIA
   backward compatibility. Windows CUDA installs pinned NVIDIA cuBLAS and CUDA
   runtimes and exposes their DLLs to faster-whisper and llama.cpp automatically.
+  The default 4096-token translation context is sized for the 8B Q4 model on a
+  6 GB-class GPU; lower `translation_gpu_layers` if full offload cannot fit.
 - Override detection in ignored `config.toml` or pass an explicit bootstrap
   backend: `mac`, `linux-cuda`, `linux-cpu`, `windows-cuda`, or `windows-cpu`.
   If WSL or a container hides `nvidia-smi` from the bootstrap process, select

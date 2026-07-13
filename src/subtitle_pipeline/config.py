@@ -18,6 +18,12 @@ class Settings:
     translation_backend: str
     device: str
     chunk_seconds: int
+    decode_window_seconds: int
+    vad_threshold: float
+    foreground_min_dbfs: float
+    translation_context_cues: int
+    translation_n_ctx: int
+    translation_gpu_layers: int
     whisper_model: Path
     translation_model: Path
 
@@ -58,18 +64,37 @@ def load_settings(root: Path | None = None) -> Settings:
     models = data.get("models", {})
     whisper_name = (
         "whisper-large-v3-turbo" if transcription == "mlx"
-        else "faster-whisper-large-v3-turbo"
+        else "faster-whisper-large-v3"
     )
     translation_name = (
         "qwen3-4b-instruct-4bit" if translation == "mlx"
-        else "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+        else "Qwen3-8B-Q4_K_M.gguf"
     )
     model_root = runtime / "models"
     whisper_model = _confined_path(model_root, models.get("whisper", whisper_name), "whisper model")
     translation_model = _confined_path(model_root, models.get("translation", translation_name), "translation model")
-    chunk_seconds = int(data.get("processing", {}).get("chunk_seconds", 300))
+    processing = data.get("processing", {})
+    chunk_seconds = int(processing.get("chunk_seconds", 300))
+    decode_window_seconds = int(processing.get("decode_window_seconds", 30))
+    vad_threshold = float(processing.get("vad_threshold", 0.65))
+    foreground_min_dbfs = float(processing.get("foreground_min_dbfs", -36.0))
+    translation_context_cues = int(processing.get("translation_context_cues", 2))
+    translation_n_ctx = int(processing.get("translation_n_ctx", 4096))
+    translation_gpu_layers = int(processing.get("translation_gpu_layers", -1))
     if chunk_seconds <= 0:
         raise ValueError("processing.chunk_seconds must be positive")
+    if decode_window_seconds <= 0 or decode_window_seconds > chunk_seconds:
+        raise ValueError("processing.decode_window_seconds must be positive and no larger than chunk_seconds")
+    if not 0 < vad_threshold < 1:
+        raise ValueError("processing.vad_threshold must be between zero and one")
+    if foreground_min_dbfs > 0:
+        raise ValueError("processing.foreground_min_dbfs must be zero or negative")
+    if translation_context_cues < 0:
+        raise ValueError("processing.translation_context_cues cannot be negative")
+    if translation_n_ctx <= 0:
+        raise ValueError("processing.translation_n_ctx must be positive")
+    if translation_gpu_layers < -1:
+        raise ValueError("processing.translation_gpu_layers must be -1 or non-negative")
     return Settings(
         root=root,
         runtime_dir=runtime,
@@ -78,6 +103,12 @@ def load_settings(root: Path | None = None) -> Settings:
         translation_backend=translation,
         device=device,
         chunk_seconds=chunk_seconds,
+        decode_window_seconds=decode_window_seconds,
+        vad_threshold=vad_threshold,
+        foreground_min_dbfs=foreground_min_dbfs,
+        translation_context_cues=translation_context_cues,
+        translation_n_ctx=translation_n_ctx,
+        translation_gpu_layers=translation_gpu_layers,
         whisper_model=whisper_model,
         translation_model=translation_model,
     )

@@ -1,4 +1,6 @@
 import json
+import wave
+from array import array
 from pathlib import Path
 
 import pytest
@@ -57,19 +59,13 @@ def test_empty_transcript_fails():
     assert transcript_quality_errors([]) == ["transcript contains zero cues"]
 
 
-def test_empty_filtered_chunk_retries_in_short_windows(tmp_path: Path, monkeypatch):
-    class WindowFallbackTranscriber:
+def test_chunk_transcription_uses_independent_short_windows(tmp_path: Path, monkeypatch):
+    class WindowedTranscriber:
         def __init__(self):
             self.clips = []
 
         def transcribe(self, audio: str, *, clip_timestamps: str = "0") -> dict:
             self.clips.append(clip_timestamps)
-            if clip_timestamps == "0":
-                return {
-                    "segments": [
-                        {"start": 0, "end": 60, "text": "銇傘亗" * 100}
-                    ]
-                }
             start = float(clip_timestamps.split(",")[0])
             return {
                 "segments": [
@@ -77,13 +73,32 @@ def test_empty_filtered_chunk_retries_in_short_windows(tmp_path: Path, monkeypat
                 ]
             }
 
-    transcriber = WindowFallbackTranscriber()
+    transcriber = WindowedTranscriber()
     monkeypatch.setattr(core, "_TRANSCRIBER", transcriber)
+    monkeypatch.setattr(core, "filter_foreground_segments", lambda path, segments: segments)
 
     segments = core.transcribe_chunk_segments(tmp_path / "chunk.wav", 65)
 
-    assert transcriber.clips == ["0", "0,30", "30,60", "60,65"]
+    assert transcriber.clips == ["0,30", "30,60", "60,65"]
     assert len(segments) == 3
+
+
+def test_foreground_filter_omits_low_level_speech(tmp_path: Path):
+    audio = tmp_path / "chunk.wav"
+    samples = array("h", [300] * 16_000 + [10_000] * 16_000)
+    with wave.open(str(audio), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16_000)
+        handle.writeframes(samples.tobytes())
+    segments = [
+        {"start": 0, "end": 1, "text": "quiet"},
+        {"start": 1, "end": 2, "text": "foreground"},
+    ]
+
+    assert [item["text"] for item in core.filter_foreground_segments(audio, segments, -36)] == [
+        "foreground"
+    ]
 
 
 def test_adjacent_duplicate_threshold_applies_to_short_chunks():
