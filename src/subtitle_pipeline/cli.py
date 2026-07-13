@@ -49,17 +49,24 @@ def review_fingerprint(settings: Settings, review: dict) -> str:
     return hashlib.sha256((settings_fingerprint(settings) + "|" + material).encode()).hexdigest()
 
 
+def confined_sample_artifact(settings: Settings, configured: str) -> Path:
+    sample_dir = (settings.runtime_dir / "sample").resolve()
+    candidate = (sample_dir / configured).resolve()
+    candidate.relative_to(sample_dir)
+    return candidate
+
+
 def sample_review_is_current(settings: Settings, review: dict) -> bool:
     try:
-        japanese = settings.runtime_dir / "sample" / review["japanese_file"]
-        chinese = settings.runtime_dir / "sample" / review["chinese_file"]
+        japanese = confined_sample_artifact(settings, review["japanese_file"])
+        chinese = confined_sample_artifact(settings, review["chinese_file"])
         return (
             review["fingerprint"] == settings_fingerprint(settings)
             and review["status"] == "awaiting_review"
             and file_digest(japanese) == review["japanese_sha256"]
             and file_digest(chinese) == review["chinese_sha256"]
         )
-    except (KeyError, OSError):
+    except (KeyError, OSError, TypeError, ValueError):
         return False
 
 

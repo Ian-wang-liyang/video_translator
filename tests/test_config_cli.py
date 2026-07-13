@@ -4,7 +4,14 @@ from pathlib import Path
 import pytest
 
 from subtitle_pipeline import cli
-from subtitle_pipeline.cli import ActiveRunnerError, approve_sample, run_lock, settings_fingerprint, status
+from subtitle_pipeline.cli import (
+    ActiveRunnerError,
+    approve_sample,
+    run_lock,
+    sample_review_is_current,
+    settings_fingerprint,
+    status,
+)
 from subtitle_pipeline.config import load_settings
 
 
@@ -92,3 +99,19 @@ def test_sample_approval_requires_a_completed_current_review(tmp_path: Path):
     settings = load_settings(tmp_path)
     with pytest.raises(Exception, match="no completed sample"):
         approve_sample(settings, "reviewed")
+
+
+def test_sample_review_artifacts_cannot_escape_sample_directory(tmp_path: Path):
+    settings = load_settings(tmp_path)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("private", encoding="utf-8")
+    review = {
+        "fingerprint": settings_fingerprint(settings),
+        "status": "awaiting_review",
+        "japanese_file": "../../secret.txt",
+        "chinese_file": "../../secret.txt",
+        "japanese_sha256": "unused",
+        "chinese_sha256": "unused",
+    }
+
+    assert not sample_review_is_current(settings, review)
