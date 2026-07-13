@@ -657,6 +657,19 @@ def validate() -> None:
                     quality_errors = transcript_quality_errors(cues)
                     if quality_errors:
                         raise ValueError("; ".join(quality_errors))
+                    metadata = provenance_path("transcription", path)
+                    expected_fingerprint = transcription_fingerprint(video, path, "0")
+                    provenance_label = "transcription"
+                else:
+                    metadata = provenance_path("translation", path)
+                    expected_fingerprint = translation_fingerprint(video.with_suffix(".ja.srt"))
+                    provenance_label = "translation"
+                try:
+                    recorded_fingerprint = json.loads(metadata.read_text(encoding="utf-8"))["fingerprint"]
+                except (OSError, TypeError, KeyError, json.JSONDecodeError) as exc:
+                    raise ValueError(f"missing or malformed {provenance_label} provenance") from exc
+                if recorded_fingerprint != expected_fingerprint:
+                    raise ValueError(f"stale {provenance_label} provenance")
                 previous_start = -1
                 for expected, cue in enumerate(cues, 1):
                     if cue.index != expected:

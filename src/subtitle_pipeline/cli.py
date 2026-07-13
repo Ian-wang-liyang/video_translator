@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -135,29 +136,85 @@ def windows_process_alive(pid: int) -> bool:
     return True
 
 
+def read_lock_owner(lock: Path) -> tuple[int, str]:
+    owner_path = lock / "owner.json" if lock.is_dir() else lock
+    owner = json.loads(owner_path.read_text(encoding="utf-8"))
+    pid = int(owner["pid"])
+    token = str(owner["token"])
+    if pid <= 0 or not token:
+        raise ValueError("invalid lock owner")
+    return pid, token
+
+
+def runner_lock_state(settings: Settings) -> tuple[str, int | None]:
+    """Return the authoritative lock state and owner PID."""
+    lock = settings.runtime_dir / "state" / "runner.lock"
+    if not lock.exists():
+        return "absent", None
+    try:
+        pid, _ = read_lock_owner(lock)
+    except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+        return "unreadable", None
+    return ("active" if process_alive(pid) else "stale"), pid
+
+
 @contextmanager
 def run_lock(settings: Settings):
     state = settings.runtime_dir / "state"
     lock = state / "runner.lock"
     pid_file = state / "runner.pid"
     state.mkdir(parents=True, exist_ok=True)
-    try:
-        lock.mkdir()
-    except FileExistsError:
+    pid = os.getpid()
+    token = uuid.uuid4().hex
+    candidate = state / f".runner.lock-{pid}-{token}.json"
+    candidate.write_text(
+        json.dumps({"pid": pid, "token": token}) + "\n",
+        encoding="utf-8",
+    )
+    while True:
         try:
-            pid = int(pid_file.read_text().strip())
-        except Exception:
-            pid = -1
-        if pid > 0 and process_alive(pid):
-            raise ActiveRunnerError(f"runner PID {pid} is active")
-        shutil.rmtree(lock, ignore_errors=True)
-        lock.mkdir()
-    pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
+            # Linking a fully written owner record publishes the lock atomically
+            # and, unlike a directory rename on POSIX, never replaces an existing lock.
+            os.link(candidate, lock)
+            candidate.unlink()
+            break
+        except FileExistsError:
+            try:
+                owner_pid, owner_token = read_lock_owner(lock)
+            except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                candidate.unlink(missing_ok=True)
+                raise ActiveRunnerError(
+                    "runner lock ownership is missing or unreadable; refusing unsafe stale-lock recovery"
+                ) from exc
+            if process_alive(owner_pid):
+                candidate.unlink(missing_ok=True)
+                raise ActiveRunnerError(f"runner PID {owner_pid} is active")
+            # Recheck the token immediately before removing a definitively stale
+            # lock so that we never delete a replacement acquired by another process.
+            try:
+                _, current_token = read_lock_owner(lock)
+            except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+                continue
+            if current_token == owner_token:
+                if lock.is_dir():
+                    shutil.rmtree(lock, ignore_errors=False)
+                else:
+                    lock.unlink()
+    pid_file.write_text(f"{pid}\n", encoding="utf-8")
     try:
         yield
     finally:
-        pid_file.unlink(missing_ok=True)
-        shutil.rmtree(lock, ignore_errors=True)
+        try:
+            _, current_token = read_lock_owner(lock)
+        except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+            current_token = None
+        if current_token == token:
+            pid_file.unlink(missing_ok=True)
+            if lock.is_dir():
+                shutil.rmtree(lock, ignore_errors=True)
+            else:
+                lock.unlink(missing_ok=True)
+        candidate.unlink(missing_ok=True)
 
 
 class ActiveRunnerError(RuntimeError):
@@ -214,12 +271,8 @@ def inventory(settings: Settings) -> dict:
 
 def status(settings: Settings) -> dict:
     data = inventory(settings)
-    pid_file = settings.runtime_dir / "state" / "runner.pid"
-    try:
-        pid = int(pid_file.read_text().strip())
-    except Exception:
-        pid = None
-    active = bool(pid and process_alive(pid))
+    lock_state, pid = runner_lock_state(settings)
+    active = lock_state == "active"
     approval = settings.runtime_dir / "state" / "sample-approved.json"
     approved = False
     if approval.exists():
@@ -246,7 +299,9 @@ def status(settings: Settings) -> dict:
             )
         except Exception:
             pass
-    if not doctor(settings)["ok"]:
+    if lock_state == "unreadable":
+        action = "resolve_failure"
+    elif not doctor(settings)["ok"]:
         action = "bootstrap"
     elif active:
         action = "monitor"
@@ -276,6 +331,7 @@ def status(settings: Settings) -> dict:
         {
             "runner_active": active,
             "runner_pid": pid,
+            "runner_lock_state": lock_state,
             "sample_approved": approved,
             "video_gate_approved": gate_approved,
             "next_action": action,
@@ -336,6 +392,13 @@ def clean(settings: Settings, dry_run: bool) -> dict:
     return {"dry_run": dry_run, "candidate_count": len(candidates), "paths": [str(p) for p in candidates]}
 
 
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="subtitle-pipeline")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON/JSONL")
@@ -345,7 +408,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("process")
     sample = sub.add_parser("sample")
     sample.add_argument("--video", type=Path)
-    sample.add_argument("--minutes", type=int, default=5)
+    sample.add_argument("--minutes", type=positive_int, default=5)
     approve = sub.add_parser("approve-sample")
     approve.add_argument("--note", required=True)
     gate = sub.add_parser("approve-video-gate")
@@ -391,6 +454,9 @@ def main(argv: list[str] | None = None) -> int:
                     chosen.relative_to(settings.video_dir.resolve())
                 except ValueError as exc:
                     raise ConfigurationError("sample video must be inside the configured videos directory") from exc
+                available = {video.resolve() for video in core.videos()}
+                if chosen not in available:
+                    raise ConfigurationError("sample input must be a supported top-level video from inventory")
                 japanese, chinese = core.sample(chosen, args.minutes * 60)
                 write_sample_review(settings, chosen, japanese, chinese)
             emit({"ok": True, "next_action": "review_sample"}, args.json)

@@ -16,6 +16,12 @@ python -m subtitle_pipeline --json status
 `--json` is a global option and must precede the subcommand. Follow
 `next_action`; do not infer activity from a PID file alone.
 
+Runner locks publish their ownership atomically. A lock with missing or
+unreadable ownership is not automatically removed, because doing so could admit
+two inference processes; inspect it and obtain explicit approval before manual
+recovery. Structured status reports `runner_lock_state` as `absent`, `active`,
+`stale`, or `unreadable`.
+
 Exit codes: `0` success, `10` validation failure, `20` configuration error, `21`
 missing dependency/model, `30` active-runner conflict, `40` inference failure,
 and `130` interruption.
@@ -38,6 +44,7 @@ and `130` interruption.
 
 Approval records are artifact-bound. Any change to a reviewed sample, the first
 video, or its monolingual subtitles invalidates the corresponding approval.
+Full validation rejects missing, malformed, or stale output provenance, and
 `bilingual` refuses to run unless current full validation succeeds. Configured
 runtime/video paths cannot escape the repository, and configured model paths
 cannot escape the runtime model directory.

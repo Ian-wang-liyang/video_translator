@@ -53,8 +53,16 @@ python -m subtitle_pipeline validate
 python -m subtitle_pipeline bilingual
 ```
 
+Sample duration must be positive, and an explicit sample input must be a
+supported top-level video reported by inventory.
+
 Bootstrap a fresh clone with `python scripts/bootstrap.py --backend auto
---non-interactive`. Model downloads are the only required model-network phase.
+--non-interactive`. Bootstrap is the only network-required phase; processing
+after dependencies and models are installed is offline.
+On Linux/WSL and Windows, auto-detection selects CUDA for an NVIDIA driver
+reporting CUDA 12.1 or newer; newer drivers use the project's CUDA 12.5 wheels.
+Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
+--cuda-wheel cu125` when host `nvidia-smi` confirms a CUDA 12.5-or-newer driver.
 
 ## Processing invariants
 
@@ -63,7 +71,7 @@ Bootstrap a fresh clone with `python scripts/bootstrap.py --backend auto
 - Decode long media sequentially into temporary five-minute mono PCM chunks.
   Validate and checkpoint each chunk, then delete temporary audio.
 - Use temperature fallback and `condition_on_previous_text=False` for MLX
-  Whisper. Use faster-whisper with VAD on Windows.
+  Whisper. Use faster-whisper with VAD on Linux/WSL and Windows.
 - Reject empty, malformed, stale, misaligned, untranslated, internally
   repetitive, cross-cue repetitive, or implausibly long outputs.
 - Reuse Japanese outputs only when their provenance fingerprint matches the
@@ -77,7 +85,8 @@ Bootstrap a fresh clone with `python scripts/bootstrap.py --backend auto
   from exactly aligned monolingual SRTs.
 - Bind sample and first-video approvals to hashes of the reviewed artifacts;
   invalidate approval whenever those artifacts change. Require current full
-  validation immediately before bilingual generation.
+  validation immediately before bilingual generation. Full validation must
+  reject missing, malformed, or stale transcription and translation provenance.
 - Keep configured video and runtime paths inside the repository and model paths
   inside the runtime model directory.
 
@@ -86,7 +95,8 @@ Bootstrap a fresh clone with `python scripts/bootstrap.py --backend auto
 - Read `README.md`, `AI_OPERATIONS.md`, configuration, entrypoints, and relevant
   tests before editing or launching work.
 - Confirm no runner is active. The atomic runner lock must reject duplicates;
-  status must distinguish active and stale PID files.
+  status must report absent, active, stale, or unreadable lock ownership.
+  Unreadable ownership must fail closed rather than be automatically removed.
 - After edits run `py_compile`, Ruff, pytest, CLI JSON smoke tests, and Git ignore
   audits with `python scripts/audit_repo.py`. CI must never download models or
   process private media.
