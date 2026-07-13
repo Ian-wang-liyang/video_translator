@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -119,19 +120,19 @@ def test_windows_cuda_dll_directory_is_added(tmp_path: Path, monkeypatch):
     (cublas_bin / "cublas64_12.dll").touch()
     (runtime_bin / "cudart64_12.dll").touch()
     added: list[str] = []
-    monkeypatch.setattr(backends.os, "name", "nt")
-    monkeypatch.setattr(backends.sys, "prefix", str(tmp_path))
-    monkeypatch.setattr(
-        backends.os,
-        "add_dll_directory",
-        lambda path: added.append(path) or object(),
-        raising=False,
+    fake_os = SimpleNamespace(
+        name="nt",
+        pathsep=backends.os.pathsep,
+        environ=backends.os.environ.copy(),
+        add_dll_directory=lambda path: added.append(path) or object(),
     )
+    monkeypatch.setattr(backends, "os", fake_os)
+    monkeypatch.setattr(backends, "sys", SimpleNamespace(prefix=str(tmp_path)))
 
     backends.configure_windows_cuda_dlls()
 
     assert added == [str(cublas_bin), str(runtime_bin)]
-    assert backends.os.environ["PATH"].split(backends.os.pathsep, 1)[0] == str(cublas_bin)
+    assert fake_os.environ["PATH"].split(fake_os.pathsep, 1)[0] == str(cublas_bin)
 
 
 def test_run_lock_is_released(tmp_path: Path):
