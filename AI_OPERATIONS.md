@@ -61,6 +61,8 @@ SRT, move it into `.subtitle-tools/quarantine/`. For decode failures, inspect
 with FFprobe and test a short sequential FFmpeg decode. For repetition or
 hallucination, stop translation, identify the earliest bad chunk, adjust the
 quality gate, and rerun the sample.
+When filtering empties a faster-whisper chunk, processing automatically retries
+the unchanged PCM chunk in independent 30-second windows before failing it.
 
 The human-readable log is `.subtitle-tools/logs/pipeline.log`; structured status
 records, approvals, provenance, locks, and transcription checkpoints live under

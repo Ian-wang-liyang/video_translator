@@ -58,6 +58,35 @@ def test_empty_transcript_fails():
     assert transcript_quality_errors([]) == ["transcript contains zero cues"]
 
 
+def test_empty_filtered_chunk_retries_in_short_windows(tmp_path: Path, monkeypatch):
+    class WindowFallbackTranscriber:
+        def __init__(self):
+            self.clips = []
+
+        def transcribe(self, audio: str, *, clip_timestamps: str = "0") -> dict:
+            self.clips.append(clip_timestamps)
+            if clip_timestamps == "0":
+                return {
+                    "segments": [
+                        {"start": 0, "end": 60, "text": "銇傘亗" * 100}
+                    ]
+                }
+            start = float(clip_timestamps.split(",")[0])
+            return {
+                "segments": [
+                    {"start": start, "end": start + 1, "text": f"鍥炲窞{int(start)}"}
+                ]
+            }
+
+    transcriber = WindowFallbackTranscriber()
+    monkeypatch.setattr(core, "_TRANSCRIBER", transcriber)
+
+    segments = core.transcribe_chunk_segments(tmp_path / "chunk.wav", 65)
+
+    assert transcriber.clips == ["0", "0,30", "30,60", "60,65"]
+    assert len(segments) == 3
+
+
 def test_adjacent_duplicate_threshold_applies_to_short_chunks():
     cues = [Cue(i + 1, f"00:00:{i:02d},000 --> 00:00:{i:02d},500", "同じ") for i in range(30)]
     assert any("adjacent" in error or "repetition" in error for error in transcript_quality_errors(cues))

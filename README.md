@@ -68,6 +68,10 @@ Blank Whisper decode windows do not interrupt repetition-burst detection; exact
 loops spanning those blanks are filtered before subtitle validation. Detection
 also runs after final cue whitespace normalization so formatting differences
 cannot conceal a loop.
+If a five-minute faster-whisper chunk becomes empty after hallucination
+filtering, the pipeline retries that same PCM audio in independent 30-second
+decode windows. The combined result must still pass the normal quality gates;
+empty outputs remain failures.
 
 ## Backends
 

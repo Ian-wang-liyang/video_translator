@@ -50,10 +50,10 @@ def test_explicit_cpu_configuration(tmp_path: Path):
 def test_pipeline_revisions_invalidate_approval_fingerprint(tmp_path: Path, monkeypatch):
     settings = load_settings(tmp_path)
     original = settings_fingerprint(settings)
-    monkeypatch.setattr("subtitle_pipeline.cli.core.TRANSCRIPTION_REVISION", "chunked-v4")
+    monkeypatch.setattr("subtitle_pipeline.cli.core.TRANSCRIPTION_REVISION", "chunked-v5")
     assert settings_fingerprint(settings) != original
 
-    monkeypatch.setattr("subtitle_pipeline.cli.core.TRANSCRIPTION_REVISION", "chunked-v3")
+    monkeypatch.setattr("subtitle_pipeline.cli.core.TRANSCRIPTION_REVISION", "chunked-v4")
     monkeypatch.setattr("subtitle_pipeline.cli.core.TRANSLATION_REVISION", "batched-v2")
     assert settings_fingerprint(settings) != original
 

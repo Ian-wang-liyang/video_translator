@@ -29,10 +29,11 @@ LOG_DIR = TOOLS / "logs"
 STATE_DIR = TOOLS / "state"
 REPORT_DIR = TOOLS / "reports"
 VIDEO_EXTENSIONS = {".avi", ".mp4", ".mkv", ".mov", ".webm"}
-TRANSCRIPTION_REVISION = "chunked-v3"
+TRANSCRIPTION_REVISION = "chunked-v4"
 TRANSLATION_REVISION = "batched-v1"
 TRANSLATION_PROMPT_REVISION = "ja-zh-hans-v1"
 CHUNK_SECONDS = SETTINGS.chunk_seconds
+WHISPER_FALLBACK_SECONDS = 30
 _TRANSCRIBER = None
 JSON_OUTPUT = False
 TIMING_RE = re.compile(
@@ -292,6 +293,29 @@ def transcript_quality_errors(cues: list[Cue]) -> list[str]:
     return errors
 
 
+def transcribe_chunk_segments(audio_chunk: Path, duration: float) -> list[dict]:
+    """Transcribe one PCM chunk, retrying empty filtered results in short windows."""
+    result = _TRANSCRIBER.transcribe(str(audio_chunk))
+    segments = filter_repetition_bursts(result.get("segments", []))
+    if segments_to_srt(segments).strip():
+        return segments
+
+    log(
+        f"RETRY transcription {audio_chunk.name}: no valid cues after filtering; "
+        f"using {WHISPER_FALLBACK_SECONDS}-second decode windows"
+    )
+    recovered: list[dict] = []
+    start = 0
+    while start < duration:
+        end = min(duration, start + WHISPER_FALLBACK_SECONDS)
+        result = _TRANSCRIBER.transcribe(
+            str(audio_chunk), clip_timestamps=f"{start},{end}"
+        )
+        recovered.extend(result.get("segments", []))
+        start += WHISPER_FALLBACK_SECONDS
+    return filter_repetition_bursts(recovered)
+
+
 def transcribe_one(video: Path, output: Path, clip: str = "0") -> None:
     fingerprint = transcription_fingerprint(video, output, clip)
     metadata = provenance_path("transcription", output)
@@ -341,6 +365,12 @@ def transcribe_one(video: Path, output: Path, clip: str = "0") -> None:
             if not chunks:
                 raise RuntimeError("FFmpeg produced no audio chunks")
             for number, audio_chunk in enumerate(chunks):
+                duration_result = subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                     "-of", "default=nw=1:nk=1", str(audio_chunk)],
+                    check=True, capture_output=True, text=True,
+                )
+                chunk_duration = float(duration_result.stdout.strip())
                 checkpoint = checkpoint_dir / f"chunk-{number:04d}.srt"
                 if checkpoint.exists():
                     chunk_cues = parse_srt(checkpoint)
@@ -351,9 +381,8 @@ def transcribe_one(video: Path, output: Path, clip: str = "0") -> None:
                 else:
                     chunk_cues = []
                 if not chunk_cues:
-                    result = _TRANSCRIBER.transcribe(str(audio_chunk))
                     adjusted = []
-                    for segment in filter_repetition_bursts(result.get("segments", [])):
+                    for segment in transcribe_chunk_segments(audio_chunk, chunk_duration):
                         segment = dict(segment)
                         segment["start"] = float(segment.get("start", 0)) + offset
                         segment["end"] = float(segment.get("end", 0)) + offset
@@ -370,12 +399,7 @@ def transcribe_one(video: Path, output: Path, clip: str = "0") -> None:
                 for cue in chunk_cues:
                     blocks.append(f"{cue_number}\n{cue.timing}\n{cue.text}")
                     cue_number += 1
-                duration = subprocess.run(
-                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                     "-of", "default=nw=1:nk=1", str(audio_chunk)],
-                    check=True, capture_output=True, text=True,
-                )
-                offset += float(duration.stdout.strip())
+                offset += chunk_duration
                 audio_chunk.unlink()
                 log(f"Transcription progress {video.name}: chunk {number + 1}/{len(chunks)}")
             rendered = "\n\n".join(blocks) + ("\n" if blocks else "")

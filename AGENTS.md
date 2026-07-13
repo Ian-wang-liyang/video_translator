@@ -84,6 +84,9 @@ Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
   bursts so blank segments cannot split and conceal a hallucination loop.
 - Repeat burst detection must also run after final cue whitespace normalization,
   before SRT rendering and checkpoint validation.
+- If filtering leaves a five-minute faster-whisper chunk with no valid cues,
+  retry that same PCM chunk as independent 30-second decode windows, combine
+  and validate the recovered cues, and still reject a genuinely empty result.
 - Reuse Japanese outputs only when their provenance fingerprint matches the
   current video, output/clip, backend, model, and transcription revision. Reuse
   Chinese outputs only when their fingerprint matches the exact Japanese
