@@ -121,7 +121,12 @@ def test_windows_cuda_dll_directory_is_added(tmp_path: Path, monkeypatch):
     added: list[str] = []
     monkeypatch.setattr(backends.os, "name", "nt")
     monkeypatch.setattr(backends.sys, "prefix", str(tmp_path))
-    monkeypatch.setattr(backends.os, "add_dll_directory", lambda path: added.append(path) or object())
+    monkeypatch.setattr(
+        backends.os,
+        "add_dll_directory",
+        lambda path: added.append(path) or object(),
+        raising=False,
+    )
 
     backends.configure_windows_cuda_dlls()
 
