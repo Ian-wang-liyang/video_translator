@@ -9,6 +9,22 @@ artifacts, or completed subtitles without explicit user approval.
 Treat this file as maintained repository documentation. Update it in the same
 change whenever a durable workflow, command, layout, or constraint changes.
 
+## Documentation authority and synchronization
+
+- `AGENTS.md` is the source of truth for repository mission, safety rules,
+  processing invariants, change discipline, and completion requirements. Future
+  agents must read and follow the current version before taking action.
+- Keep `AGENTS.md`, `README.md`, `AI_OPERATIONS.md`, `config.example.toml`, CLI
+  help/behavior, and relevant tests synchronized. When implementation or
+  workflow changes make any of them inaccurate, update every affected document
+  and test in the same change.
+- Do not leave durable decisions only in chat, commit messages, pull request
+  descriptions, or runtime logs. Record them in `AGENTS.md` and the appropriate
+  user/operator documentation.
+- Before reporting or publishing a change, compare the documentation with the
+  implemented commands, defaults, paths, gates, and safety behavior. Treat a
+  mismatch as incomplete work.
+
 ## Repository and private data
 
 - Tracked source lives in `src/subtitle_pipeline`; setup utilities live in
