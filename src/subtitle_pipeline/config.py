@@ -18,13 +18,19 @@ class Settings:
     translation_backend: str
     device: str
     chunk_seconds: int
+    source_chunk_overlap_seconds: float
     decode_window_seconds: int
     window_overlap_seconds: int
     vad_threshold: float
     foreground_min_dbfs: float
+    foreground_confident_min_dbfs: float
+    foreground_confident_logprob: float
+    foreground_confident_no_speech_prob: float
     rescue_activity_dbfs: float
     rescue_flag_logprob: float
     rescue_accept_logprob: float
+    rescue_agreement_threshold: float
+    rescue_conditional_agreement_threshold: float
     translation_context_cues: int
     translation_n_ctx: int
     translation_gpu_layers: int
@@ -87,18 +93,36 @@ def load_settings(root: Path | None = None) -> Settings:
     translation_model = _confined_path(model_root, models.get("translation", translation_name), "translation model")
     processing = data.get("processing", {})
     chunk_seconds = int(processing.get("chunk_seconds", 300))
+    source_chunk_overlap_seconds = float(processing.get("source_chunk_overlap_seconds", 1.0))
     decode_window_seconds = int(processing.get("decode_window_seconds", 30))
     window_overlap_seconds = int(processing.get("window_overlap_seconds", 2))
     vad_threshold = float(processing.get("vad_threshold", 0.65))
     foreground_min_dbfs = float(processing.get("foreground_min_dbfs", -36.0))
+    foreground_confident_min_dbfs = float(
+        processing.get("foreground_confident_min_dbfs", -42.0)
+    )
+    foreground_confident_logprob = float(
+        processing.get("foreground_confident_logprob", -0.55)
+    )
+    foreground_confident_no_speech_prob = float(
+        processing.get("foreground_confident_no_speech_prob", 0.35)
+    )
     rescue_activity_dbfs = float(processing.get("rescue_activity_dbfs", -28.0))
     rescue_flag_logprob = float(processing.get("rescue_flag_logprob", -0.85))
     rescue_accept_logprob = float(processing.get("rescue_accept_logprob", -1.0))
+    rescue_agreement_threshold = float(processing.get("rescue_agreement_threshold", 0.30))
+    rescue_conditional_agreement_threshold = float(
+        processing.get("rescue_conditional_agreement_threshold", 0.25)
+    )
     translation_context_cues = int(processing.get("translation_context_cues", 2))
     translation_n_ctx = int(processing.get("translation_n_ctx", 4096))
     translation_gpu_layers = int(processing.get("translation_gpu_layers", -1))
     if chunk_seconds <= 0:
         raise ValueError("processing.chunk_seconds must be positive")
+    if not 0 <= source_chunk_overlap_seconds < chunk_seconds:
+        raise ValueError(
+            "processing.source_chunk_overlap_seconds must be non-negative and smaller than chunk_seconds"
+        )
     if decode_window_seconds <= 0 or decode_window_seconds > chunk_seconds:
         raise ValueError("processing.decode_window_seconds must be positive and no larger than chunk_seconds")
     if window_overlap_seconds < 0 or window_overlap_seconds >= decode_window_seconds:
@@ -109,10 +133,24 @@ def load_settings(root: Path | None = None) -> Settings:
         raise ValueError("processing.vad_threshold must be between zero and one")
     if foreground_min_dbfs > 0:
         raise ValueError("processing.foreground_min_dbfs must be zero or negative")
+    if not foreground_confident_min_dbfs <= foreground_min_dbfs:
+        raise ValueError(
+            "processing.foreground_confident_min_dbfs must be no greater than foreground_min_dbfs"
+        )
+    if foreground_confident_logprob > 0:
+        raise ValueError("processing.foreground_confident_logprob must be zero or negative")
+    if not 0 <= foreground_confident_no_speech_prob <= 1:
+        raise ValueError(
+            "processing.foreground_confident_no_speech_prob must be between zero and one"
+        )
     if not foreground_min_dbfs <= rescue_activity_dbfs <= 0:
         raise ValueError("processing.rescue_activity_dbfs must be between foreground_min_dbfs and zero")
     if rescue_accept_logprob > 0 or rescue_flag_logprob > 0:
         raise ValueError("processing rescue log-probability thresholds must be zero or negative")
+    if not 0 <= rescue_conditional_agreement_threshold <= rescue_agreement_threshold <= 1:
+        raise ValueError(
+            "processing rescue agreement thresholds must be ordered between zero and one"
+        )
     if translation_context_cues < 0:
         raise ValueError("processing.translation_context_cues cannot be negative")
     if translation_n_ctx <= 0:
@@ -127,13 +165,19 @@ def load_settings(root: Path | None = None) -> Settings:
         translation_backend=translation,
         device=device,
         chunk_seconds=chunk_seconds,
+        source_chunk_overlap_seconds=source_chunk_overlap_seconds,
         decode_window_seconds=decode_window_seconds,
         window_overlap_seconds=window_overlap_seconds,
         vad_threshold=vad_threshold,
         foreground_min_dbfs=foreground_min_dbfs,
+        foreground_confident_min_dbfs=foreground_confident_min_dbfs,
+        foreground_confident_logprob=foreground_confident_logprob,
+        foreground_confident_no_speech_prob=foreground_confident_no_speech_prob,
         rescue_activity_dbfs=rescue_activity_dbfs,
         rescue_flag_logprob=rescue_flag_logprob,
         rescue_accept_logprob=rescue_accept_logprob,
+        rescue_agreement_threshold=rescue_agreement_threshold,
+        rescue_conditional_agreement_threshold=rescue_conditional_agreement_threshold,
         translation_context_cues=translation_context_cues,
         translation_n_ctx=translation_n_ctx,
         translation_gpu_layers=translation_gpu_layers,

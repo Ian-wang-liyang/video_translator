@@ -32,7 +32,7 @@ LOG_DIR = TOOLS / "logs"
 STATE_DIR = TOOLS / "state"
 REPORT_DIR = TOOLS / "reports"
 VIDEO_EXTENSIONS = {".avi", ".mp4", ".mkv", ".mov", ".webm"}
-TRANSCRIPTION_REVISION = "overlap-confidence-rescue-v6"
+TRANSCRIPTION_REVISION = "adaptive-confidence-source-overlap-v7"
 TRANSLATION_REVISION = "contextual-batched-v2"
 TRANSLATION_PROMPT_REVISION = "ja-zh-hans-v2"
 CHUNK_SECONDS = SETTINGS.chunk_seconds
@@ -117,9 +117,14 @@ def transcription_fingerprint(video: Path, output: Path, clip: str) -> str:
         f"{video.resolve()}|{video.stat().st_size}|{video.stat().st_mtime_ns}|"
         f"{output.resolve()}|{clip}|{TRANSCRIPTION_REVISION}|{SETTINGS.transcription_backend}|"
         f"{SETTINGS.device}|{WHISPER_MODEL}|{SETTINGS.specialist_model}|{SETTINGS.chunk_seconds}|"
-        f"{SETTINGS.decode_window_seconds}|{SETTINGS.window_overlap_seconds}|{SETTINGS.vad_threshold}|"
-        f"{SETTINGS.foreground_min_dbfs}|{SETTINGS.rescue_activity_dbfs}|"
-        f"{SETTINGS.rescue_flag_logprob}|{SETTINGS.rescue_accept_logprob}"
+        f"{SETTINGS.source_chunk_overlap_seconds}|{SETTINGS.decode_window_seconds}|"
+        f"{SETTINGS.window_overlap_seconds}|{SETTINGS.vad_threshold}|"
+        f"{SETTINGS.foreground_min_dbfs}|{SETTINGS.foreground_confident_min_dbfs}|"
+        f"{SETTINGS.foreground_confident_logprob}|"
+        f"{SETTINGS.foreground_confident_no_speech_prob}|{SETTINGS.rescue_activity_dbfs}|"
+        f"{SETTINGS.rescue_flag_logprob}|{SETTINGS.rescue_accept_logprob}|"
+        f"{SETTINGS.rescue_agreement_threshold}|"
+        f"{SETTINGS.rescue_conditional_agreement_threshold}"
     )
     return hashlib.sha256(material.encode()).hexdigest()
 
@@ -319,7 +324,7 @@ def chunk_checkpoint_quality_errors(checkpoint: Path, cues: list[Cue]) -> list[s
 def filter_foreground_segments(
     audio_chunk: Path, segments: list[dict], minimum_dbfs: float | None = None
 ) -> list[dict]:
-    """Drop speech segments whose PCM level is below the foreground threshold."""
+    """Drop quiet speech unless both acoustic and ASR confidence are strong."""
     threshold = SETTINGS.foreground_min_dbfs if minimum_dbfs is None else minimum_dbfs
     with wave.open(str(audio_chunk), "rb") as handle:
         if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
@@ -336,6 +341,20 @@ def filter_foreground_segments(
         rms = math.sqrt(sum(sample * sample for sample in window) / len(window))
         dbfs = 20 * math.log10(max(rms, 1) / 32768)
         if dbfs < threshold:
+            confidently_spoken = (
+                dbfs >= SETTINGS.foreground_confident_min_dbfs
+                and segment_logprob(segment) >= SETTINGS.foreground_confident_logprob
+                and segment_no_speech_prob(segment)
+                <= SETTINGS.foreground_confident_no_speech_prob
+            )
+            if confidently_spoken:
+                log(
+                    f"KEEP quiet high-confidence speech at "
+                    f"{srt_timestamp(float(segment.get('start', 0)))}: "
+                    f"{dbfs:.1f} dBFS, logprob {segment_logprob(segment):.2f}"
+                )
+                kept.append(segment)
+                continue
             log(
                 f"FILTER low-level speech at {srt_timestamp(float(segment.get('start', 0)))}: "
                 f"{dbfs:.1f} dBFS < {threshold:.1f} dBFS"
@@ -369,6 +388,35 @@ def segment_logprob(segment: dict) -> float:
         return float(segment.get("avg_logprob", -99.0))
     except (TypeError, ValueError):
         return -99.0
+
+
+def segment_no_speech_prob(segment: dict) -> float:
+    try:
+        return float(segment.get("no_speech_prob", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def interval_dbfs_levels(
+    audio_chunk: Path, intervals: list[tuple[float, float]]
+) -> list[float]:
+    """Return RMS dBFS for several intervals with a single PCM read."""
+    with wave.open(str(audio_chunk), "rb") as handle:
+        if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
+            raise ValueError(f"level analysis requires mono 16-bit PCM: {audio_chunk}")
+        sample_rate = handle.getframerate()
+        samples = array("h", handle.readframes(handle.getnframes()))
+    levels: list[float] = []
+    for start, end in intervals:
+        left = max(0, round(start * sample_rate))
+        right = min(len(samples), round(end * sample_rate))
+        window = samples[left:right]
+        if not window:
+            levels.append(-120.0)
+            continue
+        rms = math.sqrt(sum(sample * sample for sample in window) / len(window))
+        levels.append(20 * math.log10(max(rms, 1) / 32768))
+    return levels
 
 
 def pcm_activity_intervals(audio_chunk: Path, threshold: float) -> tuple[list[tuple[float, float]], float]:
@@ -446,7 +494,9 @@ def valid_rescue_segments(segments: list[dict]) -> list[dict]:
     ]
 
 
-def choose_rescue(primary: list[dict], specialist: list[dict]) -> list[dict]:
+def choose_rescue(
+    primary: list[dict], specialist: list[dict], audio_dbfs: float | None = None
+) -> list[dict]:
     """Require cross-model agreement unless one model is independently strong."""
     primary = valid_rescue_segments(primary)
     specialist = valid_rescue_segments(specialist)
@@ -454,9 +504,27 @@ def choose_rescue(primary: list[dict], specialist: list[dict]) -> list[dict]:
     specialist_text = normalized_segment_text(specialist)
     if primary_text and specialist_text:
         agreement = SequenceMatcher(None, primary_text, specialist_text).ratio()
-        if agreement >= 0.3:
+        if agreement >= SETTINGS.rescue_agreement_threshold:
             return primary
-        log(f"REJECT rescue candidate: specialist agreement {agreement:.2f} < 0.30")
+        strong_models = all(
+            segment_logprob(segment) >= SETTINGS.foreground_confident_logprob
+            for segment in [*primary, *specialist]
+        )
+        if (
+            agreement >= SETTINGS.rescue_conditional_agreement_threshold
+            and audio_dbfs is not None
+            and audio_dbfs >= SETTINGS.rescue_activity_dbfs
+            and strong_models
+        ):
+            log(
+                f"RESCUE accepting near-agreement {agreement:.2f} on loud "
+                f"high-confidence audio ({audio_dbfs:.1f} dBFS)"
+            )
+            return primary
+        log(
+            f"REJECT rescue candidate: specialist agreement {agreement:.2f} < "
+            f"{SETTINGS.rescue_agreement_threshold:.2f}"
+        )
         return []
     candidate = primary or specialist
     if candidate and min(segment_logprob(segment) for segment in candidate) >= -0.55:
@@ -535,6 +603,37 @@ def decode_pcm_clip(source: Path, destination: Path, start: float, duration: flo
     return float(duration_result.stdout.strip()), decode.stderr.strip()
 
 
+def source_chunk_window(number: int, video_duration: float) -> tuple[float, float, float, float]:
+    """Return overlapped source decode and relative non-overlapping ownership bounds."""
+    nominal_start = number * CHUNK_SECONDS
+    nominal_end = min(video_duration, nominal_start + CHUNK_SECONDS)
+    overlap = SETTINGS.source_chunk_overlap_seconds
+    decode_start = max(0.0, nominal_start - overlap)
+    decode_end = min(video_duration, nominal_end + overlap)
+    return (
+        decode_start,
+        decode_end - decode_start,
+        nominal_start - decode_start,
+        nominal_end - decode_start,
+    )
+
+
+def assign_source_chunk_ownership(
+    segments: list[dict], decode_start: float, owned_start: float, owned_end: float
+) -> list[dict]:
+    """Keep only midpoint-owned cues and convert their times to video-relative values."""
+    adjusted: list[dict] = []
+    for source in segments:
+        midpoint = (float(source.get("start", 0)) + float(source.get("end", 0))) / 2
+        if not owned_start <= midpoint < owned_end:
+            continue
+        segment = dict(source)
+        segment["start"] = float(segment.get("start", 0)) + decode_start
+        segment["end"] = float(segment.get("end", 0)) + decode_start
+        adjusted.append(segment)
+    return adjusted
+
+
 def transcribe_chunk_segments(audio_chunk: Path, duration: float) -> list[dict]:
     """Decode overlap-owned windows, then rescue uncovered or uncertain loud speech."""
     primary: list[dict] = []
@@ -568,10 +667,11 @@ def transcribe_chunk_segments(audio_chunk: Path, duration: float) -> list[dict]:
             if SETTINGS.specialist_model is not None
             else [[] for _ in clips]
         )
-        for primary_retry, specialist_retry in zip(
-            primary_retries, specialist_retries, strict=True
+        interval_levels = interval_dbfs_levels(audio_chunk, intervals)
+        for primary_retry, specialist_retry, audio_dbfs in zip(
+            primary_retries, specialist_retries, interval_levels, strict=True
         ):
-            chosen = choose_rescue(primary_retry, specialist_retry)
+            chosen = choose_rescue(primary_retry, specialist_retry, audio_dbfs)
             recovered.extend(filter_foreground_segments(audio_chunk, chosen))
     finally:
         if rescue_audio != audio_chunk:
@@ -642,8 +742,9 @@ def transcribe_one(video: Path, output: Path, clip: str = "0") -> None:
             video_duration = video_duration_ms(video) / 1000
             chunk_count = max(1, math.ceil(video_duration / CHUNK_SECONDS))
             for number in range(chunk_count):
-                offset = number * CHUNK_SECONDS
-                expected_duration = min(CHUNK_SECONDS, max(0.0, video_duration - offset))
+                offset, expected_duration, owned_start, owned_end = source_chunk_window(
+                    number, video_duration
+                )
                 audio_chunk = audio_dir / f"chunk-{number:04d}.wav"
                 checkpoint = checkpoint_dir / f"chunk-{number:04d}.srt"
                 if checkpoint.exists():
@@ -667,12 +768,12 @@ def transcribe_one(video: Path, output: Path, clip: str = "0") -> None:
                             decode_warnings.append(
                                 f"chunk {number + 1}/{chunk_count} at {offset:.3f}s\n{warnings}"
                             )
-                        adjusted = []
-                        for segment in transcribe_chunk_segments(audio_chunk, chunk_duration):
-                            segment = dict(segment)
-                            segment["start"] = float(segment.get("start", 0)) + offset
-                            segment["end"] = float(segment.get("end", 0)) + offset
-                            adjusted.append(segment)
+                        adjusted = assign_source_chunk_ownership(
+                            transcribe_chunk_segments(audio_chunk, chunk_duration),
+                            offset,
+                            owned_start,
+                            owned_end,
+                        )
                         chunk_text = segments_to_srt(adjusted)
                         atomic_write(checkpoint, chunk_text)
                         chunk_cues = parse_srt(checkpoint)

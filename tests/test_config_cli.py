@@ -101,6 +101,25 @@ def test_window_overlap_must_be_smaller_than_decode_window(tmp_path: Path):
         load_settings(tmp_path)
 
 
+def test_source_chunk_overlap_must_be_smaller_than_chunk(tmp_path: Path):
+    (tmp_path / "config.toml").write_text(
+        "[processing]\nchunk_seconds=300\nsource_chunk_overlap_seconds=300\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="source_chunk_overlap_seconds"):
+        load_settings(tmp_path)
+
+
+def test_rescue_agreement_thresholds_must_be_ordered(tmp_path: Path):
+    (tmp_path / "config.toml").write_text(
+        "[processing]\nrescue_agreement_threshold=0.2\n"
+        "rescue_conditional_agreement_threshold=0.3\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="agreement thresholds"):
+        load_settings(tmp_path)
+
+
 def test_specialist_worker_preserves_safe_windows_decode_settings(monkeypatch, capsys):
     calls: list[dict] = []
 

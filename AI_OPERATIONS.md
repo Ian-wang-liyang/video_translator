@@ -11,10 +11,14 @@ Run these commands through the active virtual-environment Python:
 python -m subtitle_pipeline --json doctor
 python -m subtitle_pipeline --json inventory
 python -m subtitle_pipeline --json status
+python -m subtitle_pipeline --json effective-config
 ```
 
 `--json` is a global option and must precede the subcommand. Follow
 `next_action`; do not infer activity from a PID file alone.
+Use `effective-config` locally to confirm resolved paths, backends, model
+locations, and quality thresholds. Its output contains local paths; redact it
+before sharing it in chat, issues, or external logs.
 
 Runner locks publish their ownership atomically. A lock with missing or
 unreadable ownership is not automatically removed, because doing so could admit
@@ -34,7 +38,7 @@ and `130` interruption.
 - `run_sample`: run a five-minute sample only; do not start the collection.
 - `review_sample`: surface sample paths and wait for human linguistic review.
 - `process_first_video`: run `process`; it stops after the first completed video.
-- `review_first_video`: surface the first video outputs for human review, then use
+- `review_full_video`: surface the first video outputs for human review, then use
   `approve-video-gate --note "..."` only with explicit human approval.
 - `resume`: start `process`; atomic outputs and validated chunks are reused.
 - `monitor`: use `python -m subtitle_pipeline --json status` and logs; never
@@ -54,6 +58,11 @@ Never approve a sample on behalf of a human, delete private media, remove models
 rename videos, clear quarantine, or publish a repository without explicit user
 authorization. Use `clean --dry-run` before proposing any cleanup.
 
+Never paste private video names, subtitle text, local usernames/paths, tokens, or
+unredacted runtime logs into an issue or external service. Follow
+`SECURITY.md` for private vulnerability reporting and use synthetic data for
+reproduction.
+
 ## Failure handling
 
 Preserve completed atomic outputs. Before manually replacing a suspect generated
@@ -63,15 +72,21 @@ hallucination, stop translation, identify the earliest bad chunk, adjust the
 quality gate, and rerun the sample.
 Faster-whisper decodes each unchanged five-minute PCM chunk through overlapping
 30-second windows with non-overlapping ownership regions, then removes segments
-below the configured foreground dBFS threshold. Because faster-whisper bypasses
-VAD for explicit clip timestamps, full-video windowed decoding does not claim to
-use VAD. Loud uncovered intervals and low-confidence cues receive a no-speech-
-disabled retry and a CPU/float32 Japanese specialist check. Run the specialist
-once per chunk in its isolated worker; do not load it into the GPU primary's
-process or request specialist word timestamps on Windows. Clipped rescue regions
-may use temporary de-clipped PCM; primary audio and source videos remain unchanged. Inspect
-`.subtitle-tools/reports/decode-warnings/` when FFmpeg reports corrupt source
-packets or when an alternate audio stream may exist.
+below the configured foreground dBFS threshold unless quieter speech meets the
+configured acoustic and ASR-confidence gates. Adjacent five-minute source chunks
+also overlap and use non-overlapping ownership bounds to protect speech at chunk
+boundaries. Because faster-whisper bypasses VAD for explicit clip timestamps,
+full-video windowed decoding does not claim to use VAD. Loud uncovered intervals
+and low-confidence cues receive a no-speech-disabled retry and a CPU/float32
+Japanese specialist check. Slightly sub-threshold agreement is accepted only
+for clearly loud intervals when both models have strong log probability. Run
+the specialist once per chunk in its isolated worker; do not load it into the
+GPU primary's process or request specialist word timestamps on Windows. Clipped
+rescue regions may use temporary de-clipped PCM;
+primary audio and source videos remain unchanged. Inspect
+`.subtitle-tools/reports/decode-warnings/` when FFmpeg reports decode warnings
+or when an alternate audio stream may exist; an initial warning after an input
+seek does not by itself prove that the source is corrupt.
 An individual atomic chunk checkpoint may be empty after every speech candidate
 fails the foreground, confidence, agreement, or hallucination gates. Resume
 accepts that checkpoint instead of decoding it again; the assembled full-video

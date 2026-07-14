@@ -29,6 +29,10 @@ change whenever a durable workflow, command, layout, or constraint changes.
 
 - Tracked source lives in `src/subtitle_pipeline`; setup utilities live in
   `scripts`; tests live in `tests`.
+- Public project documentation lives at the repository root: `README.md` is the
+  user entry point, `AI_OPERATIONS.md` is the automation runbook,
+  `CONTRIBUTING.md` defines change hygiene, `SECURITY.md` defines private
+  reporting, and `CHANGELOG.md` records user-visible changes.
 - The configured video directory contains private inputs and generated sidecars;
   it may be repository-relative or an absolute external path. Only
   `videos/.gitkeep` may be tracked from the default directory.
@@ -45,6 +49,7 @@ Use platform-neutral Python commands and prefer `--json` for inspection:
 python -m subtitle_pipeline --json doctor
 python -m subtitle_pipeline --json inventory
 python -m subtitle_pipeline --json status
+python -m subtitle_pipeline --json effective-config
 python -m subtitle_pipeline sample --minutes 5
 python -m subtitle_pipeline approve-sample --note "human review summary"
 python -m subtitle_pipeline process
@@ -78,7 +83,9 @@ Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
   inhibition request for its full lifetime and release it on every exit path.
   The display may still turn off; do not change persistent OS power-plan settings.
 - Decode long media sequentially into temporary five-minute mono PCM chunks.
-  Validate and checkpoint each chunk, then delete temporary audio.
+  Include a short source-audio overlap on both sides and assign each result to
+  the non-overlapping nominal chunk by segment midpoint. Validate and checkpoint
+  each chunk, then delete temporary audio.
 - Use temperature fallback and `condition_on_previous_text=False` for MLX
   Whisper. On Linux/WSL and Windows, faster-whisper uses VAD only when no
   explicit clip is supplied; explicit overlapping windows use PCM foreground
@@ -89,13 +96,15 @@ Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
 - Build a loud-audio coverage map after the primary decode. Retry uncovered
   high-energy intervals and low-confidence cues without Whisper's no-speech
   rejection. Accept recovery only after confidence/text checks and agreement
-  with the CPU/float32 Japanese specialist, except for independently strong output.
+  with the CPU/float32 Japanese specialist, except for independently strong
+  output. A narrowly sub-threshold agreement may pass only when both models are
+  strongly confident and the source interval is clearly loud.
   Run all specialist intervals for a chunk in one isolated worker process; the
   Windows CTranslate2 runtimes for the GPU primary and CPU specialist must not
   coexist in one process. Do not request specialist word timestamps: the pinned
   official conversion access-violates on Windows when that feature is enabled.
 - Apply FFmpeg de-clipping only to temporary rescue PCM when clipped samples are
-  detected. Record corrupt-source decode warnings and available audio streams
+  detected. Record source decode warnings and available audio streams
   under runtime reports; never filter or rewrite the source video.
 - Reject empty, malformed, stale, misaligned, untranslated, internally
   repetitive, cross-cue repetitive, or implausibly long outputs.
@@ -108,8 +117,10 @@ Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
 - Repeat burst detection must also run after final cue whitespace normalization,
   before SRT rendering and checkpoint validation.
 - Run faster-whisper over each five-minute PCM chunk as independent 30-second
-  decode windows. Use strict VAD and a PCM dBFS foreground gate to omit
-  low-level/background speech, then combine and validate the retained cues.
+  decode windows. Use a PCM dBFS foreground gate to omit low-level/background
+  speech, but retain moderately quieter segments when log probability and
+  no-speech probability both show strong speech confidence. Then combine and
+  validate the retained cues.
 - Reuse Japanese outputs only when their provenance fingerprint matches the
   current video, output/clip, backend, model, and transcription revision. Reuse
   Chinese outputs only when their fingerprint matches the exact Japanese
@@ -137,6 +148,9 @@ Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
 - After edits run `py_compile`, Ruff, pytest, CLI JSON smoke tests, and Git ignore
   audits with `python scripts/audit_repo.py`. CI must never download models or
   process private media.
+- Record user-visible behavior or workflow changes under `Unreleased` in
+  `CHANGELOG.md`. Do not publish a release, add a license, or change the granted
+  reuse rights without explicit owner approval.
 - On a new backend, model, prompt, or transcription revision, require a reviewed
   five-minute sample and then one complete-video gate before advancing.
 - Only when the user explicitly authorizes skipping that sample, process one

@@ -116,6 +116,23 @@ def test_decode_window_ownership_has_overlap_without_gaps():
     ]
 
 
+def test_source_chunks_overlap_but_ownership_has_no_gaps():
+    assert core.source_chunk_window(0, 650) == (0.0, 301.0, 0.0, 300.0)
+    assert core.source_chunk_window(1, 650) == (299.0, 302.0, 1.0, 301.0)
+    assert core.source_chunk_window(2, 650) == (599.0, 51.0, 1.0, 51.0)
+
+
+def test_source_chunk_midpoint_ownership_emits_boundary_cue_once():
+    first_view = {"start": 299.5, "end": 300.5, "text": "boundary"}
+    second_view = {"start": 0.5, "end": 1.5, "text": "boundary"}
+
+    first = core.assign_source_chunk_ownership([first_view], 0, 0, 300)
+    second = core.assign_source_chunk_ownership([second_view], 299, 1, 301)
+
+    assert first == []
+    assert second == [{"start": 299.5, "end": 300.5, "text": "boundary"}]
+
+
 def test_pcm_activity_finds_loud_interval_and_clipping(tmp_path: Path):
     audio = tmp_path / "activity.wav"
     samples = array("h", [100] * 8_000 + [32767] * 8_000)
@@ -144,6 +161,21 @@ def test_rescue_requires_agreement_or_strong_single_model():
 
     stock = [{"start": 1, "end": 2, "text": "ありがとうございました", "avg_logprob": -0.1}]
     assert core.choose_rescue(stock, stock) == []
+
+
+def test_rescue_accepts_near_agreement_only_for_loud_confident_audio():
+    primary = [{"start": 1, "end": 2, "text": "あいうえおかきく", "avg_logprob": -0.4}]
+    specialist = [{"start": 1, "end": 2, "text": "あいさしすせそた", "avg_logprob": -0.4}]
+
+    assert core.choose_rescue(primary, specialist, audio_dbfs=-20) == primary
+    assert core.choose_rescue(primary, specialist, audio_dbfs=-35) == []
+
+
+def test_rescue_rejects_near_agreement_when_either_model_is_weak():
+    primary = [{"start": 1, "end": 2, "text": "あいうえおかきく", "avg_logprob": -0.4}]
+    specialist = [{"start": 1, "end": 2, "text": "あいさしすせそた", "avg_logprob": -0.7}]
+
+    assert core.choose_rescue(primary, specialist, audio_dbfs=-20) == []
 
 
 def test_merge_rescue_adds_uncovered_segment_and_replaces_weak_text():
@@ -175,6 +207,26 @@ def test_foreground_filter_omits_low_level_speech(tmp_path: Path):
     assert [item["text"] for item in core.filter_foreground_segments(audio, segments, -36)] == [
         "foreground"
     ]
+
+
+def test_foreground_filter_keeps_quiet_high_confidence_speech(tmp_path: Path):
+    audio = tmp_path / "chunk.wav"
+    with wave.open(str(audio), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16_000)
+        handle.writeframes(array("h", [300] * 16_000).tobytes())
+    confident = {
+        "start": 0,
+        "end": 1,
+        "text": "wanted",
+        "avg_logprob": -0.4,
+        "no_speech_prob": 0.1,
+    }
+    uncertain = {**confident, "text": "uncertain", "avg_logprob": -0.8}
+
+    assert core.filter_foreground_segments(audio, [confident], -36) == [confident]
+    assert core.filter_foreground_segments(audio, [uncertain], -36) == []
 
 
 def test_adjacent_duplicate_threshold_applies_to_short_chunks():

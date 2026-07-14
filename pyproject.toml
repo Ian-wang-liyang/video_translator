@@ -6,8 +6,25 @@ build-backend = "setuptools.build_meta"
 name = "subtitle-pipeline-local"
 version = "0.1.0"
 description = "Offline Japanese transcription and Simplified Chinese subtitle generation"
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
+keywords = ["subtitles", "speech-recognition", "translation", "japanese", "simplified-chinese"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Multimedia :: Video",
+]
 dependencies = ["huggingface-hub>=0.27,<2"]
+
+[project.urls]
+Repository = "https://github.com/Ian-wang-liyang/video_translator"
+Issues = "https://github.com/Ian-wang-liyang/video_translator/issues"
+Changelog = "https://github.com/Ian-wang-liyang/video_translator/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 mac = ["mlx==0.32.0", "mlx-metal==0.32.0", "mlx-whisper==0.4.3", "mlx-lm==0.31.3"]

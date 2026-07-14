@@ -14,16 +14,27 @@ device = "auto"
 
 [processing]
 chunk_seconds = 300
-# Quality-first defaults: overlapping independent windows prevent long decoding
-# loops and boundary loss. Foreground gating omits quiet/background speech while
-# confidence- and activity-driven rescue recovers missed emphatic speech.
+# Adjacent source chunks and their short decode windows overlap. Ownership bounds
+# emit every time region once while giving boundary speech decoding context.
+source_chunk_overlap_seconds = 1.0
 decode_window_seconds = 30
 window_overlap_seconds = 2
+# faster-whisper VAD applies only when explicit clip timestamps are absent.
 vad_threshold = 0.65
+# Ordinary foreground speech must meet foreground_min_dbfs. Quieter speech down
+# to foreground_confident_min_dbfs is retained only when both ASR confidence
+# thresholds pass.
 foreground_min_dbfs = -36.0
+foreground_confident_min_dbfs = -42.0
+foreground_confident_logprob = -0.55
+foreground_confident_no_speech_prob = 0.35
+# Loud uncovered/uncertain regions are retried and compared with the Japanese
+# specialist. Near-agreement is accepted only for loud, high-confidence audio.
 rescue_activity_dbfs = -28.0
 rescue_flag_logprob = -0.85
 rescue_accept_logprob = -1.0
+rescue_agreement_threshold = 0.30
+rescue_conditional_agreement_threshold = 0.25
 translation_context_cues = 2
 translation_n_ctx = 4096
 # -1 offloads every layer. Reduce this if a small GPU cannot initialize Qwen.

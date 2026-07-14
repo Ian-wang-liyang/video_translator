@@ -1,45 +1,83 @@
-# Offline Japanese-to-Chinese subtitles
+# Offline Japanese-to-Chinese subtitle pipeline
 
-Local, resumable subtitle generation for Japanese videos. The pipeline creates
-Japanese, Simplified Chinese, and optional stacked bilingual SRT files while
-keeping videos, models, outputs, and runtime state out of Git.
+[![CI](https://github.com/Ian-wang-liyang/video_translator/actions/workflows/ci.yml/badge.svg)](https://github.com/Ian-wang-liyang/video_translator/actions/workflows/ci.yml)
 
-## Fresh clone
+A local, resumable pipeline that transcribes Japanese video and produces
+Japanese, Simplified Chinese, and optional stacked bilingual SRT subtitles.
+Source video is never rewritten, and inference runs offline after the one-time
+bootstrap downloads pinned models and dependencies.
 
-Requirements: Python 3.12, FFmpeg, FFprobe, and enough disk space for models.
+> [!IMPORTANT]
+> This is a quality-gated automation tool, not a substitute for a fluent human
+> reviewer. Sample and first-video approvals are deliberately required before a
+> collection can run unattended.
+
+## Why this project exists
+
+- **Private by default:** videos, subtitles, models, logs, and runtime state are
+  excluded from Git.
+- **Safe to resume:** work is checkpointed per five-minute audio chunk and final
+  files are written atomically.
+- **Quality gated:** transcription and translation outputs are checked for
+  malformed cues, stale provenance, repetition, misalignment, untranslated
+  text, and other common model failures.
+- **Human controlled:** a reviewed sample and one reviewed full video are bound
+  to artifact hashes. Changing the artifacts or pipeline fingerprint invalidates
+  approval.
+- **Cross-platform:** Apple Silicon uses MLX; Windows and Linux/WSL use
+  faster-whisper and llama.cpp with CUDA when supported, otherwise CPU.
+- **Machine friendly:** inspection commands expose stable JSON and a
+  `next_action` field for terminal automation.
+
+## Requirements
+
+- Python 3.12 (the supported range is `>=3.12,<3.13`)
+- FFmpeg and FFprobe on `PATH`
+- Enough free disk space for the pinned speech and translation models
+- A writable video directory, because generated SRT sidecars are placed beside
+  each immutable source video
+
+GPU acceleration is optional. NVIDIA auto-detection requires a driver reporting
+CUDA 12.1 or newer. See [Backends](#backends) for platform details.
+
+## Quick start
+
+From a fresh clone:
 
 ```bash
 python scripts/bootstrap.py --backend auto --non-interactive
 ```
 
-The bootstrap creates `.venv`, installs the platform backend, and downloads
-models into ignored `.subtitle-tools/models`. After that, normal processing can
-run offline. Interrupted model downloads are safely resumable. Copy
-`config.example.toml` to `config.toml` only when overriding defaults.
+Bootstrap creates `.venv`, installs the selected backend, and downloads pinned
+models into `.subtitle-tools/models`. Interrupted downloads are resumable. This
+is the only phase that requires network access.
 
-Put source videos directly in `videos/`, or set `paths.videos` in ignored
-`config.toml` to a repository-relative or absolute directory. The configured
-directory must be writable because generated subtitle sidecars are stored beside
-the immutable source videos. Then use the virtual-environment Python:
+Put supported videos directly in `videos/`, or copy `config.example.toml` to the
+ignored `config.toml` and set `paths.videos` to a repository-relative or absolute
+directory. Videos must be top-level files in that directory.
 
-```bash
-# Windows
+Use the virtual-environment Python for all remaining commands:
+
+```powershell
+# Windows PowerShell
 .venv\Scripts\python -m subtitle_pipeline --json doctor
 .venv\Scripts\python -m subtitle_pipeline --json inventory
 .venv\Scripts\python -m subtitle_pipeline --json status
 .venv\Scripts\python -m subtitle_pipeline sample --minutes 5
+```
 
-# macOS and Linux/WSL
+```bash
+# macOS, Linux, and WSL
 .venv/bin/python -m subtitle_pipeline --json doctor
 .venv/bin/python -m subtitle_pipeline --json inventory
 .venv/bin/python -m subtitle_pipeline --json status
 .venv/bin/python -m subtitle_pipeline sample --minutes 5
 ```
 
-Inspect the sample files under `.subtitle-tools/sample`. Approve that exact
-pipeline fingerprint only after a human spot check:
+Inspect both files in `.subtitle-tools/sample`. Only after a human linguistic
+review, approve the exact artifacts and proceed:
 
-```bash
+```text
 python -m subtitle_pipeline approve-sample --note "Japanese and Chinese sample reviewed"
 python -m subtitle_pipeline process
 python -m subtitle_pipeline approve-video-gate --note "First complete video reviewed"
@@ -48,96 +86,145 @@ python -m subtitle_pipeline validate
 python -m subtitle_pipeline bilingual
 ```
 
-Run these commands through `.venv` as shown above. The pipeline always finishes
-one video—Japanese transcription and Chinese translation—before moving to the
-next. The first `process` invocation stops after one video;
-after that output is reviewed and approved, the second invocation processes the
-remaining collection.
-
-On Windows, locked `sample` and `process` runs automatically request that the
-system stay awake until the command exits. This does not force the display to
-remain on and does not modify the machine's persistent power-plan settings.
-
-`sample --minutes` requires a positive duration. If `--video` is supplied, it
-must select a supported top-level video listed by `inventory`.
-
-Sample and complete-video approvals are invalidated when configured backend,
-device, model path, chunk duration, or explicit transcription/translation prompt
-revisions change. Japanese outputs are reused only with matching video,
-output/clip, model, backend, and transcription provenance. Chinese outputs also
-require provenance for the exact Japanese source content and current translation
-pipeline. Full validation rejects outputs with missing, malformed, or stale
-provenance, including before bilingual generation.
-Blank Whisper decode windows do not interrupt repetition-burst detection; exact
-loops spanning those blanks are filtered before subtitle validation. Detection
-also runs after final cue whitespace normalization so formatting differences
-cannot conceal a loop.
-Faster-whisper runs every five-minute PCM chunk in overlapping 30-second decode
-windows, then assigns each result a non-overlapping ownership region. A
-configurable PCM dBFS gate omits low-level/background speech. The pipeline maps
-loud audio that lacks subtitle coverage and retries those gaps, plus
-low-confidence cues, without Whisper's no-speech rejection. Recovery is checked
-against the CPU/float32 Japanese Kotoba specialist; detected clipping receives a
-temporary FFmpeg de-clipping pass. Explicit clip timestamps bypass
-faster-whisper's VAD, so foreground and recovery gates—not the configured VAD
-threshold—govern these windowed full-video calls. A chunk with no accepted
-foreground speech may have an intentional empty checkpoint so unattended work
-can resume without repeating it; an empty assembled video output still fails
+The first `process` run stops after one complete video. Review its Japanese and
+Chinese SRT files before approving the full-video gate. The second run processes
+the remaining collection. `bilingual` requires a current successful full
 validation.
 
-The quality-first Windows/Linux defaults use full Whisper `large-v3`, the
-official `kotoba-whisper-v2.0-faster` Japanese specialist, and Qwen3 8B Q4_K_M.
-Only the primary model uses the GPU during transcription; the specialist stays
-in its native float32 format on CPU to fit 6 GB-class GPUs. Translation batches
-for a chunk run together in one isolated worker because the two Windows
-CTranslate2 runtimes are not stable in the same process. Translation batches
-include neighboring dialogue as context. Source decode warnings and the
-discovered audio-stream list are retained under
-`.subtitle-tools/reports/decode-warnings/`.
-
-When a user explicitly authorizes bypassing the sample for a quality migration,
-process exactly one alternate inventory video and stop for full-video review:
+## Workflow at a glance
 
 ```text
-python -m subtitle_pipeline process --video "PATH" --skip-sample-gate
+bootstrap -> doctor -> inventory -> sample -> human review
+    -> approve sample -> process one video -> human review
+    -> approve video -> process collection -> validate -> bilingual
 ```
+
+At any point, run:
+
+```text
+python -m subtitle_pipeline --json status
+```
+
+Follow `next_action`; do not infer activity from a PID file alone. See
+[AI_OPERATIONS.md](AI_OPERATIONS.md) for the complete automation contract and
+failure-handling rules.
+
+## Command reference
+
+| Command | Purpose |
+| --- | --- |
+| `doctor` | Check FFmpeg, model files, directories, and backend modules. |
+| `inventory` | Count supported source videos and existing monolingual outputs. |
+| `status` | Report lock/gate state and the safe `next_action`. |
+| `effective-config` | Show resolved paths, backends, models, and processing values. |
+| `sample` | Generate a review sample; defaults to five minutes. |
+| `approve-sample` | Record explicit human approval of the current sample hashes. |
+| `process` | Resume safe one-video-at-a-time collection processing. |
+| `approve-video-gate` | Approve the current first full-video artifacts. |
+| `validate` | Validate every expected monolingual output and its provenance. |
+| `bilingual` | Stack aligned Chinese-over-Japanese cues after validation. |
+| `clean --dry-run` | List incomplete `.partial` files without deleting them. |
+
+`--json` is a global option and must appear before the subcommand. Commands use
+exit codes `0` (success), `10` (validation), `20` (configuration), `21` (missing
+dependency/model), `30` (runner conflict), `40` (inference), and `130`
+(interrupted).
+
+`sample --minutes` must be positive. An explicit `--video` must match a
+supported top-level inventory entry. The escape hatch
+`process --video PATH --skip-sample-gate` is only for an explicitly authorized
+quality migration; it processes exactly one inventory video and still stops at
+the full-video review gate.
+
+## Outputs and private runtime data
+
+For `videos/example.mkv`, the pipeline may create:
+
+```text
+videos/example.ja.srt
+videos/example.zh-Hans.srt
+videos/example.ja-zh-Hans.srt
+```
+
+The bilingual file places Simplified Chinese above Japanese. Video titles are
+never translated or renamed. Full validation writes
+`.subtitle-tools/reports/validation.tsv`; decode warnings and audio-stream
+inventory are stored under `.subtitle-tools/reports/decode-warnings/`.
+
+All models, checkpoints, logs, reports, approvals, caches, samples, quarantine,
+and provenance records live under ignored `.subtitle-tools/`. Suspect generated
+outputs are preserved in `.subtitle-tools/quarantine/` before replacement.
+Original videos are never filtered, rewritten, renamed, or deleted.
+
+## Configuration
+
+Defaults are documented in [config.example.toml](config.example.toml). Copy it
+to ignored `config.toml` only when overriding them. Confirm resolved values with:
+
+```text
+python -m subtitle_pipeline --json effective-config
+```
+
+Runtime paths must stay inside the repository. Model paths are relative to the
+runtime model directory. The video directory may be absolute and external.
+Processing thresholds are quality-sensitive: changing backend, model, prompt,
+chunking, or related fingerprinted settings requires a new sample and
+full-video review.
 
 ## Backends
 
-- Apple Silicon defaults to MLX/Metal.
-- Linux/WSL and Windows default to faster-whisper and llama.cpp, using CUDA when
-  an NVIDIA driver compatible with CUDA 12.1 or newer is detected and CPU
-  otherwise. Newer drivers use the packaged CUDA 12.5 wheel through NVIDIA
-  backward compatibility. Windows CUDA installs pinned NVIDIA cuBLAS and CUDA
-  runtimes and exposes their DLLs to faster-whisper and llama.cpp automatically.
-  The default 4096-token translation context is sized for the 8B Q4 model on a
-  6 GB-class GPU; lower `translation_gpu_layers` if full offload cannot fit.
-- Override detection in ignored `config.toml` or pass an explicit bootstrap
-  backend: `mac`, `linux-cuda`, `linux-cpu`, `windows-cuda`, or `windows-cpu`.
-  If WSL or a container hides `nvidia-smi` from the bootstrap process, select
-  the driver-compatible packaged wheel explicitly, for example
-  `--backend linux-cuda --cuda-wheel cu125` for a CUDA 12.5-or-newer driver.
+- **Apple Silicon:** MLX/Metal with the pinned MLX Whisper and Qwen models.
+- **Windows:** faster-whisper and llama.cpp; CUDA is selected when compatible,
+  otherwise CPU. CUDA bootstrap installs pinned NVIDIA cuBLAS/runtime packages
+  and exposes their DLL directories to the inference libraries.
+- **Linux/WSL:** faster-whisper and llama.cpp with CUDA or CPU. A
+  hardware-isolated environment may use `--backend linux-cuda --cuda-wheel
+  cu125` when host `nvidia-smi` confirms a CUDA 12.5-or-newer driver.
 
-Use `python -m subtitle_pipeline --json status` for stable machine-readable
-progress and a `next_action`. See [AI_OPERATIONS.md](AI_OPERATIONS.md) for the
-generic AI-terminal operating contract.
+The Windows/Linux quality-first defaults use Whisper `large-v3`, the
+CPU/float32 `kotoba-whisper-v2.0-faster` Japanese specialist, and Qwen3 8B
+Q4_K_M. The default 4096-token translation context targets 6 GB-class GPUs;
+lower `translation_gpu_layers` if full offload does not fit.
 
-## Outputs
+## Reliability model
 
-For `videos/example.mkv`:
+Long media is decoded sequentially to temporary five-minute mono PCM chunks.
+Both adjacent source chunks and faster-whisper's 30-second decode windows overlap
+while non-overlapping ownership regions emit each moment once. A PCM foreground
+gate can retain quieter speech when acoustic and ASR confidence are both strong.
+Loud uncovered intervals and low-confidence cues are retried without no-speech
+rejection and checked against the isolated Japanese specialist. De-clipping,
+when needed, applies only to temporary rescue audio. Slightly sub-threshold
+specialist agreement is accepted only when the audio is clearly loud and both
+models are strongly confident.
 
-- `example.ja.srt`
-- `example.zh-Hans.srt`
-- `example.ja-zh-Hans.srt` — Simplified Chinese above Japanese
+Validated checkpoints and outputs are reused only when their provenance matches
+the exact video, clip/output, model, backend, source subtitle, and pipeline
+revisions. On Windows, locked sample and processing runs request system-sleep
+inhibition for their lifetime without changing the display or persistent power
+plan.
 
-These sidecars are written beside the source under `videos/`. `validate` writes
-`.subtitle-tools/reports/validation.tsv`. Video titles are never translated or
-renamed.
+## Limitations
 
-Original videos are never rewritten. Generated files and all runtime data are
-ignored by Git.
+- Linguistic quality still requires a fluent human reviewer.
+- The pipeline targets Japanese speech and Simplified Chinese output; it is not a
+  general-purpose subtitle translator.
+- Bootstrap needs network access and substantial disk space; normal processing
+  is offline once dependencies and models are present.
+- Performance and memory use vary significantly by media, backend, and hardware.
+- Decode warnings or an unintended audio stream can still require manual
+  diagnosis. A warning immediately after an input seek does not by itself prove
+  corruption; reports preserve the evidence without modifying the source.
 
-Configured video paths may be absolute and external. Runtime paths must remain
-inside the repository, and model paths must remain inside the runtime model
-directory. Rejected or stale subtitle outputs are preserved under
-`.subtitle-tools/quarantine/` before replacement.
+## Development and project policy
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the repository and
+[SECURITY.md](SECURITY.md) before reporting a vulnerability. Maintainer and AI
+execution rules live in [AGENTS.md](AGENTS.md); change history lives in
+[CHANGELOG.md](CHANGELOG.md). CI runs linting, tests, CLI smoke checks, and a
+private-data audit on Windows, macOS, and Linux without downloading models or
+processing private media.
+
+No license is currently granted for redistribution or reuse. Before publishing
+or accepting external distribution, the repository owner should select and add
+an explicit license.
