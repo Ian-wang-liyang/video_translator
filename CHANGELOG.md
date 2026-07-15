@@ -18,6 +18,11 @@ versions.
 
 ### Changed
 
+- Translation now uses six surrounding cues by default, carries accepted prior
+  translations across batch boundaries, varies failed-format retries, and
+  selectively reviews suspicious or context-sensitive cues in a second pass.
+- Translation provenance and quality approvals are invalidated for the new
+  contextual-review prompt and pipeline revision.
 - Operator documentation now uses the actual `review_full_video` status action,
   warns that effective configuration contains private local paths, and
   distinguishes seek-time decode warnings from confirmed source corruption.

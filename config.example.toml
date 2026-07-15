@@ -35,7 +35,14 @@ rescue_flag_logprob = -0.85
 rescue_accept_logprob = -1.0
 rescue_agreement_threshold = 0.30
 rescue_conditional_agreement_threshold = 0.25
-translation_context_cues = 2
+# Broader context and accepted earlier translations help resolve fragments and
+# keep recurring names and terms consistent across batch boundaries.
+translation_context_cues = 6
+# A second pass reviews only structurally or linguistically suspicious cues.
+# These ratios are candidate/source compact-text lengths, not quality scores.
+translation_review_enabled = true
+translation_review_min_length_ratio = 0.45
+translation_review_max_length_ratio = 2.2
 translation_n_ctx = 4096
 # -1 offloads every layer. Reduce this if a small GPU cannot initialize Qwen.
 translation_gpu_layers = -1

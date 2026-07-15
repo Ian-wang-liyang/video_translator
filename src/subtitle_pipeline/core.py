@@ -33,8 +33,8 @@ STATE_DIR = TOOLS / "state"
 REPORT_DIR = TOOLS / "reports"
 VIDEO_EXTENSIONS = {".avi", ".mp4", ".mkv", ".mov", ".webm"}
 TRANSCRIPTION_REVISION = "adaptive-confidence-source-overlap-v7"
-TRANSLATION_REVISION = "contextual-batched-v2"
-TRANSLATION_PROMPT_REVISION = "ja-zh-hans-v2"
+TRANSLATION_REVISION = "contextual-reviewed-v3"
+TRANSLATION_PROMPT_REVISION = "ja-zh-hans-v3"
 CHUNK_SECONDS = SETTINGS.chunk_seconds
 _TRANSCRIBER = None
 JSON_OUTPUT = False
@@ -851,8 +851,10 @@ def load_translator():
     return load_translation_backend(SETTINGS), None
 
 
-def generate_response(model, tokenizer, instruction: str, max_tokens: int) -> str:
-    return model.generate(instruction, max_tokens)
+def generate_response(
+    model, tokenizer, instruction: str, max_tokens: int, *, attempt: int = 0
+) -> str:
+    return model.generate(instruction, max_tokens, attempt=attempt)
 
 
 def parse_numbered_response(response: str, count: int) -> list[str] | None:
@@ -875,16 +877,23 @@ def translate_group(
     *,
     context_before: list[str] | None = None,
     context_after: list[str] | None = None,
+    accepted_before: list[tuple[str, str]] | None = None,
 ) -> list[str]:
     numbered = "\n".join(f"[{i}] {text}" for i, text in enumerate(texts, 1))
     context_lines = [
         *(f"Previous context: {text}" for text in (context_before or [])),
         *(f"Following context: {text}" for text in (context_after or [])),
+        *(
+            f"Accepted terminology/context: {source} => {translated}"
+            for source, translated in (accepted_before or [])
+        ),
     ]
     context = "\n".join(context_lines) or "(no surrounding context)"
     instruction = (
         "Translate these Japanese subtitle cues into natural, concise Simplified Chinese.\n"
-        "Use the surrounding dialogue only to resolve meaning, names, pronouns, and sentence fragments. "
+        "First interpret the numbered cues as one continuous local conversation. Use the surrounding "
+        "dialogue and accepted translations to resolve meaning, names, pronouns, ellipsis, and sentence "
+        "fragments, and keep recurring terms consistent. "
         "Do not translate or return the context lines.\n"
         "Preserve names, episode/catalogue codes, numbers, and meaning. Render Japanese names "
         "in suitable Chinese characters or Chinese phonetic transcription. Do not censor or summarize.\n"
@@ -896,7 +905,19 @@ def translate_group(
         f"Numbered cues to translate:\n{numbered}"
     )
     for attempt in range(3):
-        response = generate_response(model, tokenizer, instruction, max_tokens=max(256, len(texts) * 100))
+        retry_instruction = instruction
+        if attempt:
+            retry_instruction += (
+                f"\n\nRetry {attempt}: the previous response failed the required marker or script checks. "
+                "Regenerate the complete answer independently and obey the exact format."
+            )
+        response = generate_response(
+            model,
+            tokenizer,
+            retry_instruction,
+            max_tokens=max(256, len(texts) * 100),
+            attempt=attempt,
+        )
         parsed = parse_numbered_response(response, len(texts))
         if parsed is not None and not any(re.search(r"[\u3040-\u30ff]", value) for value in parsed):
             return parsed
@@ -917,11 +938,123 @@ def translate_group(
                     [text],
                     context_before=[*(context_before or []), *texts[:index]],
                     context_after=[*texts[index + 1 :], *(context_after or [])],
+                    accepted_before=accepted_before,
                 )
             )
         return output
     log(f"WARN using unclear-speech fallback for cue: {texts[0]!r}")
     return ["（日语发音不清）"]
+
+
+def compact_translation_length(text: str) -> int:
+    return len(re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE))
+
+
+def translation_review_reasons(source: str, candidate: str) -> list[str]:
+    reasons: list[str] = []
+    source_length = compact_translation_length(source)
+    candidate_length = compact_translation_length(candidate)
+    if candidate == "（日语发音不清）":
+        reasons.append("unclear fallback")
+    if source.strip() == candidate.strip():
+        reasons.append("unchanged source")
+    if re.search(r"[\u3040-\u30ff]", candidate):
+        reasons.append("Japanese script")
+    if re.search(r"[\u3040-\u30ff\u3400-\u9fff]", source) and not re.search(
+        r"[\u3400-\u9fff]", candidate
+    ):
+        reasons.append("no Chinese script")
+    if source_length >= 4:
+        ratio = candidate_length / source_length
+        if ratio < SETTINGS.translation_review_min_length_ratio:
+            reasons.append("unusually short")
+        elif ratio > SETTINGS.translation_review_max_length_ratio:
+            reasons.append("unusually long")
+    if len(source.strip()) <= 18 and (
+        re.search(r"(?:これ|それ|あれ|ここ|そこ|あそこ|彼|彼女|こいつ|そいつ|あいつ)", source)
+        or re.search(r"(?:けど|から|ので|って|て|で|が|は|を|に|も)$", source.strip())
+    ):
+        reasons.append("context-sensitive fragment")
+    return reasons
+
+
+def review_translation_group(
+    model,
+    source_cues: list[Cue],
+    candidates: list[str],
+    indexes: list[int],
+) -> list[str] | None:
+    items: list[str] = []
+    for marker, index in enumerate(indexes, 1):
+        previous = source_cues[index - 1].text if index else "(start)"
+        following = source_cues[index + 1].text if index + 1 < len(source_cues) else "(end)"
+        items.append(
+            f"[{marker}] Previous Japanese: {previous}\n"
+            f"Japanese to review: {source_cues[index].text}\n"
+            f"Current Simplified Chinese: {candidates[index]}\n"
+            f"Following Japanese: {following}"
+        )
+    instruction = (
+        "Review the current Simplified Chinese subtitle translations against the Japanese and immediate "
+        "dialogue context. Correct mistranslations, lost meaning, inconsistent names, and mishandled sentence "
+        "fragments. Keep a current translation unchanged when it is already accurate. Be natural and concise; "
+        "do not censor or summarize. Return only one final Simplified Chinese translation per item using the "
+        "same [number] markers, with no explanations or Japanese text.\n\n"
+        + "\n\n".join(items)
+    )
+    response = generate_response(
+        model,
+        None,
+        instruction,
+        max_tokens=max(256, len(indexes) * 120),
+        attempt=1,
+    )
+    parsed = parse_numbered_response(response, len(indexes))
+    if parsed is None or any(re.search(r"[\u3040-\u30ff]", item) for item in parsed):
+        return None
+    return parsed
+
+
+def reviewed_translation_is_safe(source: str, replacement: str) -> bool:
+    replacement = replacement.strip()
+    if not replacement or replacement == source.strip():
+        return False
+    if re.search(r"[\u3040-\u30ff]", replacement):
+        return False
+    if re.search(r"[\u3040-\u30ff\u3400-\u9fff]", source) and not re.search(
+        r"[\u3400-\u9fff]", replacement
+    ):
+        return False
+    return True
+
+
+def selectively_review_translations(
+    model, source_cues: list[Cue], candidates: list[str]
+) -> list[str]:
+    if not SETTINGS.translation_review_enabled:
+        return candidates
+    review_indexes = [
+        index
+        for index, (source, candidate) in enumerate(zip(source_cues, candidates, strict=True))
+        if translation_review_reasons(source.text, candidate)
+    ]
+    if not review_indexes:
+        log("Translation semantic review: no suspicious cues")
+        return candidates
+    reviewed = list(candidates)
+    accepted = 0
+    for offset in range(0, len(review_indexes), 5):
+        indexes = review_indexes[offset : offset + 5]
+        replacements = review_translation_group(model, source_cues, reviewed, indexes)
+        if replacements is None:
+            log(f"WARN semantic review response rejected for {len(indexes)} cue(s)")
+            continue
+        for index, replacement in zip(indexes, replacements, strict=True):
+            if reviewed_translation_is_safe(source_cues[index].text, replacement):
+                reviewed[index] = replacement.strip()
+                accepted += 1
+    log(f"Translation semantic review: {accepted}/{len(review_indexes)} suspicious cues reviewed")
+    return reviewed
 
 
 def translate_srt(model, tokenizer, source: Path, destination: Path) -> None:
@@ -970,12 +1103,23 @@ def translate_srt(model, tokenizer, source: Path, destination: Path) -> None:
             [cue.text for cue in group],
             context_before=before,
             context_after=after,
+            accepted_before=[
+                (source_cues[index].text, translated[index].text)
+                for index in range(max(0, offset - context_size), offset)
+            ],
         )
         translated.extend(
             Cue(index=cue.index, timing=cue.timing, text=text)
             for cue, text in zip(group, chinese, strict=True)
         )
         log(f"Translation progress {source.name}: {len(translated)}/{len(source_cues)} cues")
+    reviewed_text = selectively_review_translations(
+        model, source_cues, [cue.text for cue in translated]
+    )
+    translated = [
+        Cue(index=cue.index, timing=cue.timing, text=text)
+        for cue, text in zip(source_cues, reviewed_text, strict=True)
+    ]
     atomic_write(destination, cues_to_srt(translated))
     atomic_write(metadata, json.dumps({"fingerprint": fingerprint}, indent=2) + "\n")
     log(f"DONE translation: {destination.name}")

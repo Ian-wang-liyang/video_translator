@@ -32,6 +32,9 @@ class Settings:
     rescue_agreement_threshold: float
     rescue_conditional_agreement_threshold: float
     translation_context_cues: int
+    translation_review_enabled: bool
+    translation_review_min_length_ratio: float
+    translation_review_max_length_ratio: float
     translation_n_ctx: int
     translation_gpu_layers: int
     whisper_model: Path
@@ -114,7 +117,16 @@ def load_settings(root: Path | None = None) -> Settings:
     rescue_conditional_agreement_threshold = float(
         processing.get("rescue_conditional_agreement_threshold", 0.25)
     )
-    translation_context_cues = int(processing.get("translation_context_cues", 2))
+    translation_context_cues = int(processing.get("translation_context_cues", 6))
+    translation_review_enabled = processing.get("translation_review_enabled", True)
+    if not isinstance(translation_review_enabled, bool):
+        raise ValueError("processing.translation_review_enabled must be true or false")
+    translation_review_min_length_ratio = float(
+        processing.get("translation_review_min_length_ratio", 0.45)
+    )
+    translation_review_max_length_ratio = float(
+        processing.get("translation_review_max_length_ratio", 2.2)
+    )
     translation_n_ctx = int(processing.get("translation_n_ctx", 4096))
     translation_gpu_layers = int(processing.get("translation_gpu_layers", -1))
     if chunk_seconds <= 0:
@@ -153,6 +165,14 @@ def load_settings(root: Path | None = None) -> Settings:
         )
     if translation_context_cues < 0:
         raise ValueError("processing.translation_context_cues cannot be negative")
+    if not 0 < translation_review_min_length_ratio <= 1:
+        raise ValueError(
+            "processing.translation_review_min_length_ratio must be greater than zero and no greater than one"
+        )
+    if translation_review_max_length_ratio < 1:
+        raise ValueError(
+            "processing.translation_review_max_length_ratio must be at least one"
+        )
     if translation_n_ctx <= 0:
         raise ValueError("processing.translation_n_ctx must be positive")
     if translation_gpu_layers < -1:
@@ -179,6 +199,9 @@ def load_settings(root: Path | None = None) -> Settings:
         rescue_agreement_threshold=rescue_agreement_threshold,
         rescue_conditional_agreement_threshold=rescue_conditional_agreement_threshold,
         translation_context_cues=translation_context_cues,
+        translation_review_enabled=translation_review_enabled,
+        translation_review_min_length_ratio=translation_review_min_length_ratio,
+        translation_review_max_length_ratio=translation_review_max_length_ratio,
         translation_n_ctx=translation_n_ctx,
         translation_gpu_layers=translation_gpu_layers,
         whisper_model=whisper_model,

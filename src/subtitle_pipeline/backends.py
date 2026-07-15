@@ -47,7 +47,7 @@ class Transcriber(Protocol):
 
 
 class Translator(Protocol):
-    def generate(self, instruction: str, max_tokens: int) -> str: ...
+    def generate(self, instruction: str, max_tokens: int, *, attempt: int = 0) -> str: ...
 
 
 class MLXTranscriber:
@@ -164,14 +164,14 @@ class MLXTranslator:
         from mlx_lm import load
         self.model, self.tokenizer = load(str(settings.translation_model))
 
-    def generate(self, instruction: str, max_tokens: int) -> str:
+    def generate(self, instruction: str, max_tokens: int, *, attempt: int = 0) -> str:
         from mlx_lm import generate
         from mlx_lm.sample_utils import make_sampler
         messages = _messages(instruction)
         prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         return generate(
             self.model, self.tokenizer, prompt=prompt, max_tokens=max_tokens,
-            sampler=make_sampler(temp=0.0), verbose=False,
+            sampler=make_sampler(temp=(0.0, 0.2, 0.35)[min(attempt, 2)]), verbose=False,
         ).strip()
 
 
@@ -186,10 +186,11 @@ class LlamaCppTranslator:
             n_gpu_layers=layers, verbose=False,
         )
 
-    def generate(self, instruction: str, max_tokens: int) -> str:
+    def generate(self, instruction: str, max_tokens: int, *, attempt: int = 0) -> str:
+        temperatures = (0.2, 0.3, 0.4)
         result = self.model.create_chat_completion(
-            messages=_messages(instruction), temperature=0.2, top_p=0.8,
-            repeat_penalty=1.1, max_tokens=max_tokens, seed=0,
+            messages=_messages(instruction), temperature=temperatures[min(attempt, 2)], top_p=0.8,
+            repeat_penalty=1.1, max_tokens=max_tokens, seed=attempt,
         )
         return str(result["choices"][0]["message"]["content"]).strip()
 

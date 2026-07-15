@@ -125,6 +125,14 @@ Hardware-isolated WSL/container terminals may pass `--backend linux-cuda
   current video, output/clip, backend, model, and transcription revision. Reuse
   Chinese outputs only when their fingerprint matches the exact Japanese
   source, backend, model, and translation/prompt revisions.
+- Translate local cue batches as continuous dialogue with configurable
+  surrounding context and accepted earlier Japanese-to-Chinese pairs so names,
+  ellipsis, sentence fragments, and recurring terms remain consistent across
+  batch boundaries. Translation retries must change both their corrective
+  instruction and sampling attempt instead of repeating an identical request.
+  Run the configured second semantic pass only on cues flagged by script,
+  length, fallback, unchanged-source, or context-sensitive-fragment signals;
+  preserve one-to-one cue alignment and reject malformed review responses.
 - Write outputs atomically via `.partial`. Preserve all existing artifacts under
   `.subtitle-tools/quarantine/`; quarantine suspect outputs before manual
   replacement.

@@ -250,8 +250,63 @@ class FakeTranslator:
     def __init__(self):
         self.response = "[1] 新字幕"
 
-    def generate(self, instruction: str, max_tokens: int) -> str:
+    def generate(self, instruction: str, max_tokens: int, *, attempt: int = 0) -> str:
         return self.response
+
+
+def test_translation_retries_change_prompt_and_sampling_attempt():
+    class RetryTranslator:
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, instruction: str, max_tokens: int, *, attempt: int = 0) -> str:
+            self.calls.append((instruction, attempt))
+            return "未翻訳です" if attempt == 0 else "[1] 正确翻译"
+
+    translator = RetryTranslator()
+    assert core.translate_group(translator, None, ["正しい翻訳"]) == ["正确翻译"]
+    assert [attempt for _, attempt in translator.calls] == [0, 1]
+    assert "previous response failed" in translator.calls[1][0]
+
+
+def test_translation_review_flags_context_sensitive_and_extreme_candidates():
+    assert "context-sensitive fragment" in core.translation_review_reasons("それは", "那个")
+    assert "unusually short" in core.translation_review_reasons("これは長い日本語です", "好")
+    assert core.translation_review_reasons("普通の会話です", "这是普通对话") == []
+
+
+def test_selective_translation_review_only_sends_suspicious_cues():
+    class ReviewTranslator:
+        def __init__(self):
+            self.instructions = []
+
+        def generate(self, instruction: str, max_tokens: int, *, attempt: int = 0) -> str:
+            self.instructions.append(instruction)
+            return "[1] 那个没问题"
+
+    cues = [
+        Cue(1, "00:00:00,000 --> 00:00:01,000", "普通の会話です"),
+        Cue(2, "00:00:01,000 --> 00:00:02,000", "それは"),
+    ]
+    translator = ReviewTranslator()
+
+    assert core.selectively_review_translations(
+        translator, cues, ["这是普通对话", "那个"]
+    ) == ["这是普通对话", "那个没问题"]
+    assert len(translator.instructions) == 1
+    assert "Current Simplified Chinese: 那个" in translator.instructions[0]
+
+
+def test_selective_translation_review_preserves_candidate_when_replacement_is_unsafe():
+    class UnsafeReviewTranslator:
+        def generate(self, instruction: str, max_tokens: int, *, attempt: int = 0) -> str:
+            return "[1] 彼女"
+
+    cues = [Cue(1, "00:00:00,000 --> 00:00:01,000", "彼女")]
+
+    assert core.selectively_review_translations(
+        UnsafeReviewTranslator(), cues, ["她"]
+    ) == ["她"]
 
 
 def write_srt(path: Path, text: str) -> None:
