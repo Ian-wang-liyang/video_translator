@@ -120,6 +120,21 @@ def test_rescue_agreement_thresholds_must_be_ordered(tmp_path: Path):
         load_settings(tmp_path)
 
 
+def test_translation_review_defaults_and_threshold_validation(tmp_path: Path):
+    settings = load_settings(tmp_path)
+    assert settings.translation_context_cues == 6
+    assert settings.translation_review_enabled is True
+    assert settings.translation_review_min_length_ratio == 0.45
+    assert settings.translation_review_max_length_ratio == 2.2
+
+    (tmp_path / "config.toml").write_text(
+        "[processing]\ntranslation_review_min_length_ratio=0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="translation_review_min_length_ratio"):
+        load_settings(tmp_path)
+
+
 def test_specialist_worker_preserves_safe_windows_decode_settings(monkeypatch, capsys):
     calls: list[dict] = []
 

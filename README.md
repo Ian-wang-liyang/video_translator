@@ -204,6 +204,14 @@ revisions. On Windows, locked sample and processing runs request system-sleep
 inhibition for their lifetime without changing the display or persistent power
 plan.
 
+Translation treats each local batch as continuous dialogue, carries a wider
+window of surrounding Japanese plus accepted earlier translations across batch
+boundaries, and changes the prompt and sampling state on format retries. A
+selective second pass rechecks cues with suspicious length, script, fallback,
+unchanged-source, or context-fragment signals. This targets ambiguous dialogue
+without doubling translation time for every cue; it remains an automated review,
+not a guarantee of linguistic correctness.
+
 ## Limitations
 
 - Linguistic quality still requires a fluent human reviewer.

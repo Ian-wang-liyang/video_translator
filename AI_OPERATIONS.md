@@ -91,6 +91,14 @@ An individual atomic chunk checkpoint may be empty after every speech candidate
 fails the foreground, confidence, agreement, or hallucination gates. Resume
 accepts that checkpoint instead of decoding it again; the assembled full-video
 transcript must still be nonempty and pass normal validation.
+Translation uses configurable surrounding cues and accepted earlier
+Japanese-to-Chinese pairs to maintain local continuity across ten-cue batches.
+Malformed output retries change both their corrective instruction and sampling
+attempt. After the first pass, only cues flagged by structural or
+context-sensitive heuristics receive a semantic review call; a malformed review
+response is rejected and the aligned first-pass cue is preserved. This selective
+pass normally adds less work than reviewing every cue, but it still requires a
+new human-reviewed sample whenever its settings or revision change.
 An explicitly user-authorized sample bypass must name one inventory video and
 use `process --video PATH --skip-sample-gate`; it must stop for full-video review.
 On Windows, the runner lock also holds a system-sleep inhibition request for the
